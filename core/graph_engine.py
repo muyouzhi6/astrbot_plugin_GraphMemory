@@ -1,6 +1,8 @@
 import json
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -22,10 +24,26 @@ class GraphEngine:
         self.kuzu_db = kuzu.Database(db_path)
         self.conn: Any = kuzu.Connection(self.kuzu_db)
 
+        # 线程安全与异步支持
+        self._lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="GraphEngine"
+        )
+
         # 访问统计缓存 (Lazy Update)
         self._access_cache: set[str] = set()
+        self._last_flush_time = time.time()
+        self._flush_threshold = 50  # 缓存积压阈值
+        self._flush_interval = 60  # 强制刷新时间间隔 (秒)
 
         self.init_schema()
+
+    def _run_query(self, query: str, params: dict | None = None) -> Any:
+        """
+        线程安全地执行 Cypher 查询
+        """
+        with self._lock:
+            return self.conn.execute(query, params or {})
 
     def init_schema(self):
         """
@@ -101,10 +119,12 @@ class GraphEngine:
 
     def close(self):
         """清理资源"""
-        if self.conn is not None:
-            self.conn.close()
-            self.conn = None
-        self.kuzu_db = None
+        self._executor.shutdown(wait=True)
+        with self._lock:
+            if self.conn is not None:
+                self.conn.close()
+                self.conn = None
+            self.kuzu_db = None
         logger.info("[GraphMemory] KuzuDB connection closed.")
 
     # ================= 增 / 改 (Write) =================
@@ -127,6 +147,7 @@ class GraphEngine:
     ):
         """
         添加三元组 (幂等操作: 存在则更新，不存在则创建)
+        原子化写入: 使用单条 Cypher 语句完成
         """
 
         now = int(time.time())
@@ -136,89 +157,70 @@ class GraphEngine:
         src_id = self._gen_pk(src_name, session_id, persona_id)
         tgt_id = self._gen_pk(tgt_name, session_id, persona_id)
 
+        # 原子化 Cypher 查询
+        # 这里为了逻辑清晰，仍然先 MERGE 节点，再 MERGE 关系
+        query = """
+            MERGE (a:Entity {id: $src_id})
+            ON CREATE SET
+                a.name = $src_name, a.type = $src_type,
+                a.session_id = $sid, a.persona_id = $pid,
+                a.attributes = $attr,
+                a.updated_at = $now,
+                a.last_accessed = $now,
+                a.access_count = 1,
+                a.importance = $src_imp
+            ON MATCH SET
+                a.updated_at = $now,
+                a.last_accessed = $now,
+                a.access_count = a.access_count + 1,
+                a.importance = CASE WHEN $src_imp > a.importance THEN $src_imp ELSE a.importance END
+
+            MERGE (b:Entity {id: $tgt_id})
+            ON CREATE SET
+                b.name = $tgt_name, b.type = $tgt_type,
+                b.session_id = $sid, b.persona_id = $pid,
+                b.updated_at = $now,
+                b.last_accessed = $now,
+                b.access_count = 1,
+                b.importance = $tgt_imp
+            ON MATCH SET
+                b.updated_at = $now,
+                b.last_accessed = $now,
+                b.access_count = b.access_count + 1,
+                b.importance = CASE WHEN $tgt_imp > b.importance THEN $tgt_imp ELSE b.importance END
+
+            MERGE (a)-[r:Related {relation: $rel}]->(b)
+            ON CREATE SET
+                r.weight = $weight,
+                r.confidence = $conf,
+                r.source_user = $src_user,
+                r.updated_at = $now
+            ON MATCH SET
+                r.weight = r.weight + $weight,
+                r.updated_at = $now
+        """
+
+        params = {
+            "src_id": src_id,
+            "src_name": src_name,
+            "src_type": src_type,
+            "sid": session_id,
+            "pid": persona_id,
+            "attr": attr_str,
+            "now": now,
+            "src_imp": src_importance,
+            "tgt_id": tgt_id,
+            "tgt_name": tgt_name,
+            "tgt_type": tgt_type,
+            "tgt_imp": tgt_importance,
+            "rel": relation,
+            "weight": weight,
+            "conf": confidence,
+            "src_user": source_user,
+        }
+
         try:
-            # 插入/更新 Source 节点
-            self.conn.execute(
-                """
-                MERGE (a:Entity {id: $id})
-                ON CREATE SET
-                    a.name = $name, a.type = $type,
-                    a.session_id = $sid, a.persona_id = $pid,
-                    a.attributes = $attr,
-                    a.updated_at = $now,
-                    a.last_accessed = $now,
-                    a.access_count = 1,
-                    a.importance = $imp
-                ON MATCH SET
-                    a.updated_at = $now,
-                    a.last_accessed = $now,
-                    a.access_count = a.access_count + 1,
-                    a.importance = CASE WHEN $imp > a.importance THEN $imp ELSE a.importance END
-            """,
-                {
-                    "id": src_id,
-                    "name": src_name,
-                    "type": src_type,
-                    "sid": session_id,
-                    "pid": persona_id,
-                    "attr": attr_str,
-                    "now": now,
-                    "imp": src_importance,
-                },
-            )
-
-            # 插入/更新 Target 节点
-            self.conn.execute(
-                """
-                MERGE (b:Entity {id: $id})
-                ON CREATE SET
-                    b.name = $name, b.type = $type,
-                    b.session_id = $sid, b.persona_id = $pid,
-                    b.updated_at = $now,
-                    b.last_accessed = $now,
-                    b.access_count = 1,
-                    b.importance = $imp
-                ON MATCH SET
-                    b.updated_at = $now,
-                    b.last_accessed = $now,
-                    b.access_count = b.access_count + 1,
-                    b.importance = CASE WHEN $imp > b.importance THEN $imp ELSE b.importance END
-            """,
-                {
-                    "id": tgt_id,
-                    "name": tgt_name,
-                    "type": tgt_type,
-                    "sid": session_id,
-                    "pid": persona_id,
-                    "now": now,
-                    "imp": tgt_importance,
-                },
-            )
-
-            # 插入/更新 关系
-            self.conn.execute(
-                """
-                MATCH (a:Entity {id: $src_id}), (b:Entity {id: $tgt_id})
-                MERGE (a)-[r:Related {relation: $rel}]->(b)
-                ON CREATE SET
-                    r.weight = $weight,
-                    r.confidence = $conf,
-                    r.source_user = $src_user,
-                    r.updated_at = $now
-                ON MATCH SET
-                    r.weight = r.weight + $weight,
-                    r.updated_at = $now
-            """,
-                {
-                    "src_id": src_id,
-                    "tgt_id": tgt_id,
-                    "rel": relation,
-                    "now": now,
-                    "weight": weight,
-                    "conf": confidence,
-                    "src_user": source_user,
-                },
-            )
+            self._run_query(query, params)
         except Exception as e:
             logger.error(f"[GraphMemory] Failed to add triplet: {e}")
 
@@ -261,7 +263,7 @@ class GraphEngine:
         )
 
         try:
-            result: Any = self.conn.execute(find_seeds_cypher, params)
+            result: Any = self._run_query(find_seeds_cypher, params)
         except Exception as e:
             logger.error(f"[GraphMemory] Search seeds failed: {e}")
             return ""
@@ -307,7 +309,7 @@ class GraphEngine:
             """
 
             try:
-                res_out: Any = self.conn.execute(q_out, hop_params)
+                res_out: Any = self._run_query(q_out, hop_params)
                 while res_out.has_next():
                     row = res_out.get_next()  # [a.name, r.relation, b.name, b.id]
                     # 生成文本: (Node A) --[relation]--> (Node B)
@@ -325,7 +327,7 @@ class GraphEngine:
             """
 
             try:
-                res_in: Any = self.conn.execute(q_in, hop_params)
+                res_in: Any = self._run_query(q_in, hop_params)
                 while res_in.has_next():
                     row = res_in.get_next()  # [a.name, r.relation, b.name, a.id]
                     collected_triplets.add(f"({row[0]}) --[{row[1]}]--> ({row[2]})")
@@ -344,61 +346,64 @@ class GraphEngine:
         """
         [Lazy Update] 记录节点被访问。
         仅加入内存集合，等待 flush_access_stats 批量写入。
+        如果积压过多或距离上次刷新过久，则立即刷新。
         """
         if not node_ids:
             return
-        self._access_cache.update(node_ids)
+
+        with self._lock:
+            self._access_cache.update(node_ids)
+            current_cache_size = len(self._access_cache)
+            time_since_flush = time.time() - self._last_flush_time
+
+        # 双触发机制
+        if (
+            current_cache_size >= self._flush_threshold
+            or time_since_flush >= self._flush_interval
+        ):
+            self.flush_access_stats()
 
     def flush_access_stats(self):
         """
         批量将访问记录回写到数据库 (更新 last_accessed 和 access_count)
         """
-        if not self._access_cache:
-            return
+        with self._lock:
+            if not self._access_cache:
+                return
+            node_ids = list(self._access_cache)
+            self._access_cache.clear()
+            self._last_flush_time = time.time()
 
-        node_ids = list(self._access_cache)
         count = len(node_ids)
-        self._access_cache.clear()
-
         now = int(time.time())
         logger.debug(f"[GraphMemory] Flushing access stats for {count} nodes.")
 
-        # 注意：Kuzu 目前对 UPDATE 支持有限，可能需要逐个或者分批 UPDATE
-        # 这里使用 UNWIND 尝试批量更新
-        # 如果 Kuzu 版本较低不支持 UNWIND + MERGE/SET，则可能需要循环
-        # 鉴于 UNWIND 是标准 Cypher，先尝试批量
         try:
-            # 构造包含 ID 的 list of dict
-            # Kuzu 的 Python API 传递 list 参数可能有限制，取决于版本
             # 安全起见，我们分批处理，每批 50 个，避免 query 过大
             batch_size = 50
             for i in range(0, count, batch_size):
                 batch = node_ids[i : i + batch_size]
 
-                # 构建 WHERE id IN [...]
-                # 注意：Kuzu 0.6.0+ 支持 LIST 参数，但为了兼容性，我们手动构造
-                # 但手动构造 string list 很麻烦，这里使用 Kuzu 的 parameterized list
-                # 假设 Kuzu 支持 $ids (LIST[STRING])
-
-                self.conn.execute(
-                    """
-                    MATCH (n:Entity)
-                    WHERE n.id IN $ids
-                    SET n.last_accessed = $now,
-                        n.access_count = n.access_count + 1
-                    """,
-                    {"ids": batch, "now": now},
-                )
+                # 再次获取锁进行 DB 操作
+                with self._lock:
+                    self.conn.execute(
+                        """
+                        MATCH (n:Entity)
+                        WHERE n.id IN $ids
+                        SET n.last_accessed = $now,
+                            n.access_count = n.access_count + 1
+                        """,
+                        {"ids": batch, "now": now},
+                    )
         except Exception as e:
             logger.error(f"[GraphMemory] Failed to flush access stats: {e}")
-            # 出错不回滚 cache，避免死循环重试，丢失统计可以接受
 
     def get_graph_statistics(self) -> dict:
         """
         获取图谱统计信息
         """
         try:
-            res: Any = self.conn.execute("MATCH (n:Entity) RETURN count(n)")
+            res: Any = self._run_query("MATCH (n:Entity) RETURN count(n)")
             node_count = 0
             if res.has_next():
                 node_count = res.get_next()[0]
@@ -410,7 +415,9 @@ class GraphEngine:
     def prune_graph(self, max_nodes: int, retention_weights: dict[str, float]) -> int:
         """
         记忆修剪/遗忘机制。
-        删除得分最低的节点，直到节点数 <= max_nodes。
+        智能剪枝策略：
+        1. 孤岛节点优先清理 (度为0的非重要节点)
+        2. 基于生命周期评分清理 (Importance + Frequency + Recency)
         """
         stats = self.get_graph_statistics()
         current_nodes = stats["node_count"]
@@ -418,7 +425,7 @@ class GraphEngine:
         if current_nodes <= max_nodes:
             return 0
 
-        # 需要删除的数量 (多删一点作为 buffer，避免频繁触发，例如多删 10%)
+        # 需要删除的数量 (多删一点作为 buffer)
         target_delete = int((current_nodes - max_nodes) + (max_nodes * 0.05))
         if target_delete <= 0:
             return 0
@@ -427,65 +434,85 @@ class GraphEngine:
             f"[GraphMemory] Pruning triggered. Current: {current_nodes}, Max: {max_nodes}, Target Delete: {target_delete}"
         )
 
-        # 计算 Retention Score 并删除
-        # Score = w1 * (1 / (now - last_accessed + 1)) + w2 * access_count + w3 * importance
-        # 为了方便计算，我们使用 SQL/Cypher 表达式
-        # 注意：Kuzu 的数学函数可能有限，尽量简化
-        # 我们直接按排序取 limit 删除
-
-        w1 = retention_weights.get("recency", 0.4)
-        w2 = retention_weights.get("frequency", 0.3)
-        w3 = retention_weights.get("importance", 0.3)
-        now = int(time.time())
-
-        # 防止除以零，时间差加一个常数 (比如 3600秒，归一化一下)
-        # 实际上，我们可以简化为：按 last_accessed 排序，access_count 和 importance 作为加分项
-        # Kuzu Cypher:
-        # ORDER BY (w1 * n.last_accessed) + (w2 * n.access_count * 1000) + (w3 * n.importance * 100000) ASC
-        # 这里系数是为了让量纲接近：
-        # last_accessed 是 10^9 级别
-        # access_count 是 1-1000 级别
-        # importance 是 0-1 级别
-
-        # 这种直接线性组合比较困难，因为 last_accessed 数值太大，会主导结果。
-        # 策略调整：
-        # 先筛选出 "不够重要" 的节点 (importance < 0.8)，保护重要节点
-        # 然后在这些节点中，按 last_accessed (时效性) 排序，删除最老的。
-        # access_count 可以在 WHERE 中过滤 (例如只删除 access_count < 5 的)
-
-        # 新策略:
-        # 1. 保护机制: importance >= 0.9 (核心实体) 或 access_count > 100 (热门实体) 豁免
-        # 2. 删除机制: 剩余节点中，按 last_accessed ASC 排序，删除前 N 个
+        deleted_count = 0
 
         try:
-            # 1. 查找待删除的 ID
-            # 无法在 DELETE 中直接 LIMIT，需要先查 ID
-            query = f"""
-                MATCH (n:Entity)
-                WHERE n.importance < 0.9 AND n.access_count < 50
-                RETURN n.id, n.last_accessed
-                ORDER BY n.last_accessed ASC
-                LIMIT {target_delete}
-            """
+            # ----------------------------------------------------
+            # 1. 孤岛清理 (Orphan Cleanup)
+            # 删除没有任何连接 且 重要性低 的节点
+            # ----------------------------------------------------
+            if deleted_count < target_delete:
+                orphan_limit = target_delete - deleted_count
 
-            res: Any = self.conn.execute(query)
-            ids_to_delete = []
-            while res.has_next():
-                row = res.get_next()
-                ids_to_delete.append(row[0])
+                # 查询度为0的节点
+                # 注意: Kuzu 的 degree() 函数可能需要特定版本
+                # 备选: MATCH (n) WHERE NOT (n)-[]-()
+                orphan_query = f"""
+                    MATCH (n:Entity)
+                    WHERE NOT (n)-[]-() AND n.importance < 0.8
+                    RETURN n.id
+                    LIMIT {orphan_limit}
+                """
 
-            if not ids_to_delete:
-                logger.info(
-                    "[GraphMemory] No eligible nodes to prune (all nodes are important or hot)."
-                )
-                return 0
+                res_orphan = self._run_query(orphan_query)
+                orphan_ids = []
+                while res_orphan.has_next():
+                    orphan_ids.append(res_orphan.get_next()[0])
 
-            # 2. 执行删除
-            # 分批删除
-            deleted_count = 0
-            batch_size = 50
-            for i in range(0, len(ids_to_delete), batch_size):
-                batch = ids_to_delete[i : i + batch_size]
+                if orphan_ids:
+                    self._batch_delete(orphan_ids)
+                    deleted_count += len(orphan_ids)
+                    logger.info(f"[GraphMemory] Pruned {len(orphan_ids)} orphan nodes.")
+
+            # ----------------------------------------------------
+            # 2. 末位淘汰 (Retention Score Pruning)
+            # ----------------------------------------------------
+            if deleted_count < target_delete:
+                remaining_target = target_delete - deleted_count
+
+                # 评分策略:
+                # 豁免: importance >= 0.9 (核心实体)
+                # 排序: last_accessed ASC (越老越删)
+                # 辅助: access_count < 10 (只删冷门)
+
+                # 简化的 Cypher 评分查询
+                score_query = f"""
+                    MATCH (n:Entity)
+                    WHERE n.importance < 0.9 AND n.access_count < 20
+                    RETURN n.id, n.last_accessed
+                    ORDER BY n.last_accessed ASC
+                    LIMIT {remaining_target}
+                """
+
+                res_score = self._run_query(score_query)
+                score_ids = []
+                while res_score.has_next():
+                    score_ids.append(res_score.get_next()[0])
+
+                if score_ids:
+                    self._batch_delete(score_ids)
+                    deleted_count += len(score_ids)
+                    logger.info(
+                        f"[GraphMemory] Pruned {len(score_ids)} low-score nodes."
+                    )
+
+            return deleted_count
+
+        except Exception as e:
+            logger.error(f"[GraphMemory] Pruning failed: {e}")
+            return deleted_count
+
+    def _batch_delete(self, node_ids: list[str]):
+        """
+        [辅助] 批量删除节点
+        """
+        if not node_ids:
+            return
+
+        batch_size = 50
+        for i in range(0, len(node_ids), batch_size):
+            batch = node_ids[i : i + batch_size]
+            with self._lock:
                 self.conn.execute(
                     """
                     MATCH (n:Entity)
@@ -494,16 +521,6 @@ class GraphEngine:
                     """,
                     {"ids": batch},
                 )
-                deleted_count += len(batch)
-
-            logger.info(
-                f"[GraphMemory] Pruning finished. Deleted {deleted_count} nodes."
-            )
-            return deleted_count
-
-        except Exception as e:
-            logger.error(f"[GraphMemory] Pruning failed: {e}")
-            return 0
 
     # ================= 迁移 (Migration) =================
 
