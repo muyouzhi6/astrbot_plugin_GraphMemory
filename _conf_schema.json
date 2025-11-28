@@ -24,8 +24,20 @@
     "description": "人格隔离例外列表。如果开启了默认隔离，此列表中的会话将共享记忆（不隔离）；如果关闭了默认隔离，此列表中的会话将开启隔离。填写 unified_msg_origin。",
     "type": "list",
     "items": {
-      "type": "string"
+        "type": "string"
     },
     "default": []
+  },
+  "keyword_extraction_mode": {
+    "description": "记忆检索的关键词提取模式。local: 使用本地算法(jieba)提取，速度快且免费；llm: 使用 LLM 提取，更智能但有成本。",
+    "type": "string",
+    "options": ["local", "llm"],
+    "default": "local"
+  },
+  "keyword_extraction_provider": {
+    "description": "如果关键词提取模式为 llm，指定使用的模型 ID。留空则复用 learning_model_id 或当前会话模型。",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider"
   }
 }

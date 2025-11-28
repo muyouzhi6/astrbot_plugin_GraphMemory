@@ -223,6 +223,8 @@ class GraphEngine:
             LIMIT 5
         """
 
+        logger.debug(f"[GraphMemory] Search query: {find_seeds_cypher.strip()} | Params: {params}")
+
         try:
             result: Any = self.conn.execute(find_seeds_cypher, params)
         except Exception as e:
@@ -233,6 +235,8 @@ class GraphEngine:
         while result.has_next():
             row = result.get_next()
             current_seed_ids.add(row[0])  # n.id
+
+        logger.debug(f"[GraphMemory] Found {len(current_seed_ids)} seed nodes.")
 
         if not current_seed_ids:
             return ""

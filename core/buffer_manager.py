@@ -33,7 +33,7 @@ class SessionBuffer:
         self.session_id = session_id
         self.max_size = max_size
         self.max_seconds = max_seconds
-        
+
         self.is_group = False # 标记该会话是否为群聊
         self.current_persona_id: str | None = None # 记录当前Buffer所属的人格ID
 
@@ -76,6 +76,9 @@ class SessionBuffer:
         # 将缓冲区内的消息连接成字符串
         lines = [msg.to_log_str() for msg in self._buffer]
         text_block = "\n".join(lines)
+
+        # DEBUG日志: 记录被 Flush 的消息内容简要
+        logger.debug(f"[GraphMemory Buffer] Flushing {len(lines)} messages from buffer {self.session_id} (Persona: {self.current_persona_id})")
 
         # 重置
         self._buffer.clear()
@@ -220,7 +223,7 @@ class BufferManager:
              text = buffer.flush()
              if text and old_persona: # 类型检查
                  await self.flush_callback(session_id, text, is_group, old_persona)
-        
+
         # 此时 buffer 为空（或者是新建的，或者是刚 flush 过的），add 会重置 current_persona_id
         should_flush = buffer.add(msg)
 
@@ -250,7 +253,7 @@ class BufferManager:
                         # 保存状态用于回调
                         persona_id = buffer.current_persona_id
                         is_group = buffer.is_group
-                        
+
                         text = buffer.flush()
                         if text and persona_id:
                             # 异步调用 callback，避免阻塞检查循环
