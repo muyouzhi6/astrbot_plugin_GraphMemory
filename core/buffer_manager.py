@@ -25,8 +25,8 @@ class BufferMessage:
         """转化为 LLM 易读的格式: [role:name:id]:content"""
         prefix = f"[{self.role}:{self.sender_name}:{self.sender_id}]"
         if self.is_group:
-             # 如果是群聊，加上(Group)标识
-             prefix = f"[{self.role}:{self.sender_name}:{self.sender_id}]"
+            # 如果是群聊，加上(Group)标识
+            prefix = f"[{self.role}:{self.sender_name}:{self.sender_id}]"
         return f"{prefix}: {self.content}"
 
 
@@ -35,7 +35,7 @@ class SessionBuffer:
         self.session_id = session_id
         self.max_size = max_size
         self.max_seconds = max_seconds
-        self.is_group = False # 标记该会话是否为群聊
+        self.is_group = False  # 标记该会话是否为群聊
 
         self._buffer: list[BufferMessage] = []
         self._last_flush_time = time.time()
@@ -47,7 +47,7 @@ class SessionBuffer:
         """
         self._buffer.append(message)
         self._last_activity_time = time.time()
-        
+
         # 更新会话属性
         if message.is_group:
             self.is_group = True
@@ -153,14 +153,14 @@ class BufferManager:
         content = event.get_message_outline()
 
         is_group = bool(event.get_group_id())
-        
+
         msg = BufferMessage(
             sender_id=event.get_sender_id(),
             sender_name=event.get_sender_name(),
             content=content,
             timestamp=time.time(),
             role="user",
-            is_group=is_group
+            is_group=is_group,
         )
         await self._push_to_buffer(session_id, msg)
 
@@ -228,7 +228,9 @@ class BufferManager:
                         text = buffer.flush()
                         if text:
                             # 异步调用 callback，避免阻塞检查循环
-                            asyncio.create_task(self.flush_callback(session_id, text, is_group))
+                            asyncio.create_task(
+                                self.flush_callback(session_id, text, is_group)
+                            )
             except Exception as e:
                 logger.error(f"[GraphMemory Buffer] Timer loop error: {e}")
 
