@@ -1,3 +1,5 @@
+import asyncio
+import functools
 import json
 import os
 import threading
@@ -109,6 +111,25 @@ class GraphEngine:
             except RuntimeError:
                 pass
 
+        # 3. 元数据表 (Metadata) - 用于版本控制
+        try:
+            self.conn.execute("""
+                CREATE NODE TABLE _Metadata (
+                    id STRING,
+                    version INT64,
+                    updated_at INT64,
+                    PRIMARY KEY (id)
+                )
+            """)
+            # 初始化版本号
+            now = int(time.time())
+            self.conn.execute(
+                f"CREATE (:_Metadata {{id: 'schema_version', version: 1, updated_at: {now}}})"
+            )
+            logger.info("[GraphMemory] Created metadata table '_Metadata'.")
+        except RuntimeError:
+            pass
+
     def _gen_pk(self, name: str, session_id: str, persona_id: str) -> str:
         """
         生成复合主键，确保物理隔离
@@ -129,7 +150,7 @@ class GraphEngine:
 
     # ================= 增 / 改 (Write) =================
 
-    def add_triplet(
+    async def add_triplet(
         self,
         src_name: str,
         relation: str,
@@ -146,8 +167,47 @@ class GraphEngine:
         tgt_importance: float = 0.5,
     ):
         """
-        添加三元组 (幂等操作: 存在则更新，不存在则创建)
-        原子化写入: 使用单条 Cypher 语句完成
+        [Async] 添加三元组 (幂等操作: 存在则更新，不存在则创建)
+        """
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            self._executor,
+            functools.partial(
+                self._add_triplet_sync,
+                src_name=src_name,
+                relation=relation,
+                tgt_name=tgt_name,
+                session_id=session_id,
+                persona_id=persona_id,
+                src_type=src_type,
+                tgt_type=tgt_type,
+                attributes=attributes,
+                weight=weight,
+                confidence=confidence,
+                source_user=source_user,
+                src_importance=src_importance,
+                tgt_importance=tgt_importance,
+            ),
+        )
+
+    def _add_triplet_sync(
+        self,
+        src_name: str,
+        relation: str,
+        tgt_name: str,
+        session_id: str,
+        persona_id: str = "default",
+        src_type: str = "entity",
+        tgt_type: str = "entity",
+        attributes: dict | None = None,
+        weight: float = 1.0,
+        confidence: float = 1.0,
+        source_user: str = "unknown",
+        src_importance: float = 0.5,
+        tgt_importance: float = 0.5,
+    ):
+        """
+        [Sync] 内部同步方法：添加三元组
         """
 
         now = int(time.time())
@@ -226,7 +286,25 @@ class GraphEngine:
 
     # ================= 查 / 召回 (Read) =================
 
-    def search_subgraph(
+    async def search_subgraph(
+        self, keywords: list[str], session_id: str, persona_id: str, hops: int = 2
+    ) -> str:
+        """
+        [Async] 基于 BFS 的多跳图检索
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            functools.partial(
+                self._search_subgraph_sync,
+                keywords=keywords,
+                session_id=session_id,
+                persona_id=persona_id,
+                hops=hops,
+            ),
+        )
+
+    def _search_subgraph_sync(
         self, keywords: list[str], session_id: str, persona_id: str, hops: int = 2
     ) -> str:
         """
@@ -361,11 +439,19 @@ class GraphEngine:
             current_cache_size >= self._flush_threshold
             or time_since_flush >= self._flush_interval
         ):
-            self.flush_access_stats()
+            # 这里调用的是 sync 方法，因为 record_access 通常在 executor 线程中被 search_subgraph 调用
+            self._flush_access_stats_sync()
 
-    def flush_access_stats(self):
+    async def flush_access_stats(self):
         """
-        批量将访问记录回写到数据库 (更新 last_accessed 和 access_count)
+        [Async] 批量将访问记录回写到数据库
+        """
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._executor, self._flush_access_stats_sync)
+
+    def _flush_access_stats_sync(self):
+        """
+        [Sync] 批量将访问记录回写到数据库 (更新 last_accessed 和 access_count)
         """
         with self._lock:
             if not self._access_cache:
@@ -391,7 +477,7 @@ class GraphEngine:
                         MATCH (n:Entity)
                         WHERE n.id IN $ids
                         SET n.last_accessed = $now,
-                            n.access_count = n.access_count + 1
+                        n.access_count = n.access_count + 1
                         """,
                         {"ids": batch, "now": now},
                     )
@@ -400,7 +486,7 @@ class GraphEngine:
 
     def get_graph_statistics(self) -> dict:
         """
-        获取图谱统计信息
+        获取图谱统计信息 (Sync Helper)
         """
         try:
             res: Any = self._run_query("MATCH (n:Entity) RETURN count(n)")
@@ -412,9 +498,27 @@ class GraphEngine:
             logger.error(f"[GraphMemory] Failed to get stats: {e}")
             return {"node_count": 0}
 
-    def prune_graph(self, max_nodes: int, retention_weights: dict[str, float]) -> int:
+    async def prune_graph(
+        self, max_nodes: int, retention_weights: dict[str, float]
+    ) -> int:
         """
-        记忆修剪/遗忘机制。
+        [Async] 记忆修剪/遗忘机制
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            functools.partial(
+                self._prune_graph_sync,
+                max_nodes=max_nodes,
+                retention_weights=retention_weights,
+            ),
+        )
+
+    def _prune_graph_sync(
+        self, max_nodes: int, retention_weights: dict[str, float]
+    ) -> int:
+        """
+        [Sync] 记忆修剪/遗忘机制
         智能剪枝策略：
         1. 孤岛节点优先清理 (度为0的非重要节点)
         2. 基于生命周期评分清理 (Importance + Frequency + Recency)
@@ -524,9 +628,21 @@ class GraphEngine:
 
     # ================= 迁移 (Migration) =================
 
-    def migrate(self, from_context: dict[str, str], to_context: dict[str, str]):
+    async def migrate(self, from_context: dict[str, str], to_context: dict[str, str]):
         """
-        万能迁移函数。
+        [Async] 万能迁移函数。
+        """
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            self._executor,
+            functools.partial(
+                self._migrate_sync, from_context=from_context, to_context=to_context
+            ),
+        )
+
+    def _migrate_sync(self, from_context: dict[str, str], to_context: dict[str, str]):
+        """
+        [Sync] 万能迁移函数。
         """
         old_sid = from_context.get("session_id", "")
         old_pid = from_context.get("persona_id", "")
@@ -590,7 +706,7 @@ class GraphEngine:
             self._force_create_node(name, new_sid, new_pid, type_, attr)
 
         for src, rel, tgt, weight in edges_data:
-            self.add_triplet(src, rel, tgt, new_sid, new_pid)
+            self._add_triplet_sync(src, rel, tgt, new_sid, new_pid)
             # TODO 想严格保留原权重，这里其实应该写专门的 Cypher
             # 但复用 add_triplet (默认+0.5) 对于聊天机器人记忆迁移通常是可以接受的，因为它代表"回忆"了一次
 
@@ -644,8 +760,18 @@ class GraphEngine:
 
     # ================= 数据清空 =================
 
-    def clear_context(self, session_id: str, persona_id: str | None = None):
-        """清空特定上下文的记忆"""
+    async def clear_context(self, session_id: str, persona_id: str | None = None):
+        """[Async] 清空特定上下文的记忆"""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            self._executor,
+            functools.partial(
+                self._clear_context_sync, session_id=session_id, persona_id=persona_id
+            ),
+        )
+
+    def _clear_context_sync(self, session_id: str, persona_id: str | None = None):
+        """[Sync] 清空特定上下文的记忆"""
         filter_sql = "n.session_id = $sid"
         params = {"sid": session_id}
 

@@ -112,7 +112,7 @@ class GraphMemory(Star):
             if t.confidence < self.confidence_threshold:
                 continue
 
-            self.graph_engine.add_triplet(
+            await self.graph_engine.add_triplet(
                 src_name=t.src,
                 relation=t.rel,
                 tgt_name=t.tgt,
@@ -157,7 +157,7 @@ class GraphMemory(Star):
         logger.debug(f"[GraphMemory] Searching memory with keywords: {keywords}")
 
         # 2跳查询，获取更丰富的上下文
-        memory_text = self.graph_engine.search_subgraph(
+        memory_text = await self.graph_engine.search_subgraph(
             keywords, session_id, persona_id, hops=2
         )
 
@@ -186,7 +186,7 @@ class GraphMemory(Star):
         old_sid = event.unified_msg_origin
         new_sid = target_session
 
-        self.graph_engine.migrate(
+        await self.graph_engine.migrate(
             from_context={"session_id": old_sid}, to_context={"session_id": new_sid}
         )
         yield event.plain_result(f"Memory migrated from {old_sid} to {new_sid}")
@@ -204,13 +204,13 @@ class GraphMemory(Star):
                 await asyncio.sleep(flush_interval)
 
                 # 1. Flush Access Stats
-                self.graph_engine.flush_access_stats()
+                await self.graph_engine.flush_access_stats()
 
                 # 2. Check Pruning
                 prune_counter += flush_interval
                 if prune_counter >= self.prune_interval:
                     prune_counter = 0
-                    self.graph_engine.prune_graph(
+                    await self.graph_engine.prune_graph(
                         max_nodes=self.max_global_nodes,
                         retention_weights={
                             "recency": 0.4,
@@ -235,7 +235,7 @@ class GraphMemory(Star):
             self._maintenance_task.cancel()
             # 退出前最后一次 Flush
             if hasattr(self, "graph_engine"):
-                self.graph_engine.flush_access_stats()
+                await self.graph_engine.flush_access_stats()
 
         if hasattr(self, "buffer_manager"):
             await self.buffer_manager.shutdown()
