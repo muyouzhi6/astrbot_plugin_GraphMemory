@@ -1,7 +1,6 @@
 import asyncio
 import functools
 import json
-import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -15,15 +14,8 @@ from astrbot.api import logger
 
 class GraphEngine:
     def __init__(self, db_path: Path):
-        self.db_path = str(db_path)  # KuzuDB 接受字符串路径
-
-        try:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        except OSError:
-            pass
-
-        # 初始化 kuzu
-        self.kuzu_db = kuzu.Database(db_path)
+        self.db_path = (db_path / "kuzu_db").resolve().as_posix()
+        self.kuzu_db = kuzu.Database(self.db_path)
         self.conn: Any = kuzu.Connection(self.kuzu_db)
 
         # 线程安全与异步支持
