@@ -5,7 +5,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
 
-from .core import BufferManager, GraphEngine, KnowledgeExtractor
+from .core import BufferManager, GraphEngine, KnowledgeExtractor, WebServer
 
 
 @register(
@@ -22,6 +22,9 @@ class GraphMemory(Star):
     ):
         super().__init__(context)
         self.config = config or {}
+
+        # WebUI Server
+        self.web_server = None
 
         # 配置项
         self.enable_group_learning = self.config.get("enable_group_learning", True)
@@ -53,6 +56,13 @@ class GraphMemory(Star):
 
         # 初始化图数据库引擎
         self.graph_engine = GraphEngine(plugin_data_path)
+
+        # 启动 WebUI
+        try:
+            self.web_server = WebServer(self.graph_engine, self.config)
+            self.web_server.start()
+        except Exception as e:
+            logger.error(f"[GraphMemory] Failed to start WebUI: {e}")
 
         # 启动维护任务 (清理 + Lazy Update)
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
@@ -264,6 +274,9 @@ class GraphMemory(Star):
 
         if hasattr(self, "buffer_manager"):
             await self.buffer_manager.shutdown()
+
+        if self.web_server:
+            self.web_server.stop()
 
         if hasattr(self, "graph_engine"):
             # 退出前最后一次 Flush Access Stats (如果需要的话，但此时最好确保 executor 可用)

@@ -32,12 +32,16 @@ class GraphEngine:
 
         self.init_schema()
 
-    def _run_query(self, query: str, params: dict | None = None) -> Any:
+    def execute_query(self, query: str, params: dict | None = None) -> Any:
         """
-        线程安全地执行 Cypher 查询
+        线程安全地执行 Cypher 查询 (Public API)
         """
         with self._lock:
             return self.conn.execute(query, params or {})
+
+    def _run_query(self, query: str, params: dict | None = None) -> Any:
+        """Deprecated: Use execute_query instead"""
+        return self.execute_query(query, params)
 
     def init_schema(self):
         """
@@ -272,7 +276,9 @@ class GraphEngine:
         }
 
         try:
-            logger.debug(f"[GraphMemory DEBUG] Executing Cypher (Add Triplet): {src_name} --[{relation}]--> {tgt_name}")
+            logger.debug(
+                f"[GraphMemory DEBUG] Executing Cypher (Add Triplet): {src_name} --[{relation}]--> {tgt_name}"
+            )
             self._run_query(query, params)
         except Exception as e:
             logger.error(f"[GraphMemory] Failed to add triplet: {e}")
@@ -296,6 +302,183 @@ class GraphEngine:
                 hops=hops,
             ),
         )
+
+    async def search_subgraph_structure(
+        self, keywords: list[str], session_id: str, persona_id: str, hops: int = 2
+    ) -> dict:
+        """
+        [Async] 基于 BFS 的多跳图检索 (返回结构化数据用于调试/可视化)
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            functools.partial(
+                self._search_subgraph_structure_sync,
+                keywords=keywords,
+                session_id=session_id,
+                persona_id=persona_id,
+                hops=hops,
+            ),
+        )
+
+    def _search_subgraph_structure_sync(
+        self, keywords: list[str], session_id: str, persona_id: str, hops: int = 2
+    ) -> dict:
+        """
+        [Sync] 结构化搜索实现
+        """
+        result_data = {"nodes": [], "edges": []}
+        if not keywords:
+            return result_data
+
+        # 1. 查找种子节点 (Seeds)
+        seeds_conditions = []
+        params = {"sid": session_id, "pid": persona_id}
+
+        for i, kw in enumerate(keywords):
+            key = f"kw{i}"
+            seeds_conditions.append(f"n.name CONTAINS ${key}")
+            params[key] = kw
+
+        where_clause = " OR ".join(seeds_conditions)
+
+        find_seeds_cypher = f"""
+            MATCH (n:Entity)
+            WHERE n.session_id = $sid AND n.persona_id = $pid AND ({where_clause})
+            RETURN n.id, n.name, n.type, n.importance
+            LIMIT 10
+        """
+
+        try:
+            res: Any = self._run_query(find_seeds_cypher, params)
+        except Exception as e:
+            logger.error(f"[GraphMemory] Search seeds failed: {e}")
+            return result_data
+
+        current_seed_ids = set()
+        seen_nodes = set()
+        seen_edges = set()
+
+        while res.has_next():
+            row = res.get_next()
+            nid, name, ntype, imp = row[0], row[1], row[2], row[3]
+            current_seed_ids.add(nid)
+            if nid not in seen_nodes:
+                result_data["nodes"].append(
+                    {
+                        "id": nid,
+                        "name": name,
+                        "type": ntype,
+                        "importance": imp,
+                        "group": "seed",
+                    }
+                )
+                seen_nodes.add(nid)
+
+        if not current_seed_ids:
+            return result_data
+
+        # 2. BFS
+        processed_ids = set()
+
+        for i in range(hops):
+            active_seeds = list(current_seed_ids - processed_ids)
+            if not active_seeds:
+                break
+
+            processed_ids.update(active_seeds)
+            next_hop_ids = set()
+            hop_params = {"seeds": active_seeds}
+
+            # Outgoing
+            q_out = """
+                MATCH (a:Entity)-[r:Related]->(b:Entity)
+                WHERE a.id IN $seeds
+                RETURN a.id, r.relation, b.id, b.name, b.type, b.importance, r.weight
+                LIMIT 50
+            """
+            try:
+                res_out = self._run_query(q_out, hop_params)
+                while res_out.has_next():
+                    # a_id, rel, b_id, b_name, b_type, b_imp, weight
+                    row = res_out.get_next()
+                    src, rel, tgt = row[0], row[1], row[2]
+
+                    # Add Target Node
+                    if tgt not in seen_nodes:
+                        result_data["nodes"].append(
+                            {
+                                "id": tgt,
+                                "name": row[3],
+                                "type": row[4],
+                                "importance": row[5],
+                                "group": f"hop_{i + 1}",
+                            }
+                        )
+                        seen_nodes.add(tgt)
+                        next_hop_ids.add(tgt)
+
+                    # Add Edge
+                    edge_key = f"{src}_{rel}_{tgt}"
+                    if edge_key not in seen_edges:
+                        result_data["edges"].append(
+                            {
+                                "source": src,
+                                "target": tgt,
+                                "relation": rel,
+                                "weight": row[6],
+                            }
+                        )
+                        seen_edges.add(edge_key)
+            except Exception:
+                pass
+
+            # Incoming
+            q_in = """
+                MATCH (a:Entity)-[r:Related]->(b:Entity)
+                WHERE b.id IN $seeds
+                RETURN a.id, a.name, a.type, a.importance, r.relation, b.id, r.weight
+                LIMIT 50
+            """
+            try:
+                res_in = self._run_query(q_in, hop_params)
+                while res_in.has_next():
+                    # a_id, a_name, a_type, a_imp, rel, b_id, weight
+                    row = res_in.get_next()
+                    src, rel, tgt = row[0], row[4], row[5]
+
+                    # Add Source Node
+                    if src not in seen_nodes:
+                        result_data["nodes"].append(
+                            {
+                                "id": src,
+                                "name": row[1],
+                                "type": row[2],
+                                "importance": row[3],
+                                "group": f"hop_{i + 1}",
+                            }
+                        )
+                        seen_nodes.add(src)
+                        next_hop_ids.add(src)
+
+                    # Add Edge
+                    edge_key = f"{src}_{rel}_{tgt}"
+                    if edge_key not in seen_edges:
+                        result_data["edges"].append(
+                            {
+                                "source": src,
+                                "target": tgt,
+                                "relation": rel,
+                                "weight": row[6],
+                            }
+                        )
+                        seen_edges.add(edge_key)
+            except Exception:
+                pass
+
+            current_seed_ids = next_hop_ids
+
+        return result_data
 
     def _search_subgraph_sync(
         self, keywords: list[str], session_id: str, persona_id: str, hops: int = 2
@@ -365,7 +548,9 @@ class GraphEngine:
             if not active_seeds:
                 break
 
-            logger.debug(f"[GraphMemory DEBUG] Hop {i+1}: {len(active_seeds)} active seeds.")
+            logger.debug(
+                f"[GraphMemory DEBUG] Hop {i + 1}: {len(active_seeds)} active seeds."
+            )
 
             # 标记为已处理
             processed_ids.update(active_seeds)
@@ -412,11 +597,15 @@ class GraphEngine:
             except Exception as e:
                 logger.error(f"[GraphMemory] Error in incoming hop: {e}")
 
-            logger.debug(f"[GraphMemory DEBUG] Hop {i+1} found {len(next_hop_ids)} new nodes.")
+            logger.debug(
+                f"[GraphMemory DEBUG] Hop {i + 1} found {len(next_hop_ids)} new nodes."
+            )
             # 更新种子，准备下一跳
             current_seed_ids = next_hop_ids
 
-        logger.debug(f"[GraphMemory DEBUG] Search finished. Total triplets found: {len(collected_triplets)}")
+        logger.debug(
+            f"[GraphMemory DEBUG] Search finished. Total triplets found: {len(collected_triplets)}"
+        )
         return "\n".join(collected_triplets)
 
     # ================= 维护 (Maintenance) =================

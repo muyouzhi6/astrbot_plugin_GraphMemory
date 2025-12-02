@@ -49,5 +49,20 @@
     "description": "记忆清理检查间隔（秒）。",
     "type": "int",
     "default": 3600
+  },
+  "webui_host": {
+    "description": "WebUI 监听地址",
+    "type": "string",
+    "default": "0.0.0.0"
+  },
+  "webui_port": {
+    "description": "WebUI 监听端口",
+    "type": "int",
+    "default": 8081
+  },
+  "webui_key": {
+    "description": "WebUI 访问密钥。留空则在启动时随机生成。",
+    "type": "string",
+    "default": ""
   }
 }
