@@ -7,13 +7,20 @@
         sidebarOpen: true,
         activeTab: 'info',
         graphData: { nodes: [], links: [] },
+        currentSessionId: null, // 新增：当前加载的会话ID
         selectedNode: null,
         hoverNode: null,
         highlightNodes: new Set(),
         highlightLinks: new Set(),
         debugResult: null,
         showLabels: true,
-        Graph: null
+        Graph: null,
+        // 监控状态
+        ws: null,
+        logPaused: false,
+        logLevel: 'ALL',
+        // 存储从 WebSocket 收到的原始日志数据
+        logCache: []
     };
     
     const el = {
@@ -29,6 +36,7 @@
         searchInput: document.getElementById('search-input'),
         tabInfo: document.getElementById('tab-info'),
         tabDebug: document.getElementById('tab-debug'),
+        tabMonitor: document.getElementById('tab-monitor'),
         nodeInfoEmpty: document.getElementById('node-info-empty'),
         nodeInfoDetail: document.getElementById('node-info-detail'),
         debugQuery: document.getElementById('debug-query'),
@@ -47,7 +55,14 @@
         showLabels: document.getElementById('show-labels'),
         reloadBtn: document.getElementById('reload-btn'),
         fitViewBtn: document.getElementById('fit-view-btn'),
-        tooltip: document.getElementById('tooltip')
+        tooltip: document.getElementById('tooltip'),
+        // 监控面板元素
+        monitorLogs: document.getElementById('monitor-logs'),
+        monitorTasks: document.getElementById('monitor-tasks'),
+        monitorMessages: document.getElementById('monitor-messages'),
+        logLevelFilter: document.getElementById('log-level-filter'),
+        logPauseToggle: document.getElementById('log-pause-toggle'),
+        logClear: document.getElementById('log-clear')
     };
     
     function getAuthHeaders() {
@@ -67,7 +82,8 @@
         }
         if (token) {
             try {
-                const res = await fetch('/api/graph/nodes?limit=1', { headers: getAuthHeaders() });
+                // Use a valid, lightweight endpoint for session checking
+                const res = await fetch('/api/contexts', { headers: getAuthHeaders() });
                 if (res.ok) {
                     state.isLoggedIn = true;
                     showMainApp();
@@ -121,7 +137,10 @@
     function showMainApp() {
         el.loginScreen.classList.add('hidden');
         el.mainApp.classList.remove('hidden');
-        setTimeout(initGraph, 100);
+        // Initialize the app logic (fetch contexts, then load graph)
+        initApp();
+        // 连接 WebSocket
+        connectWebSocket();
     }
     
     function toggleTheme() {
@@ -172,6 +191,7 @@
         });
         el.tabInfo.classList.toggle('hidden', tabName !== 'info');
         el.tabDebug.classList.toggle('hidden', tabName !== 'debug');
+        el.tabMonitor.classList.toggle('hidden', tabName !== 'monitor');
     }
     
     function initGraph() {
@@ -319,63 +339,67 @@
             window._resizeListenerAdded = true;
         }
         
-        if (state.graphData.nodes.length === 0) loadNodes();
+        // Data loading is now handled by initApp and loadGraphData
     }
     
-    async function loadNodes() {
+    async function initApp() {
+        // Ensure graph is initialized visually
+        initGraph();
+    
         try {
-            const res = await fetch('/api/graph/nodes', { headers: getAuthHeaders() });
-            if (!res.ok) {
-                if (res.status === 401) {
-                    console.error('认证失败，重新登录');
-                    logout();
-                    return;
-                }
-                throw new Error('加载节点失败');
+            const res = await fetch('/api/contexts', { headers: getAuthHeaders() });
+            if (!res.ok) throw new Error('Failed to fetch contexts');
+            const contexts = await res.json();
+    
+            if (contexts && contexts.length > 0) {
+                // For now, just load the first context
+                // TODO: Implement a dropdown to select context
+                const firstContext = contexts[0];
+                state.currentSessionId = firstContext.session_id;
+                await loadGraphData(state.currentSessionId);
+            } else {
+                console.warn("No contexts found to load.");
+                // Clear graph data if no contexts
+                state.graphData = { nodes: [], links: [] };
+                if (state.Graph) state.Graph.graphData(state.graphData);
+                updateStats();
             }
-            const nodes = await res.json();
-            console.log('加载到的节点:', nodes);
-            state.graphData.nodes = nodes.map(n => ({
-                id: n.id,
-                name: n.name || n.id,
-                type: n.type || '未知',
-                group: n.group || 'default',
-                importance: n.importance || 0.5,
-                properties: n.attributes || n.properties || {},
-                observations: n.observations || []
-            }));
-            await loadEdges();
         } catch (e) {
-            console.error('加载节点错误:', e);
+            console.error("Error initializing app:", e);
+            if (e.response && e.response.status === 401) logout();
         }
     }
     
-    async function loadEdges() {
+    async function loadGraphData(sessionId) {
+        if (!sessionId) {
+            console.error("No session ID provided to loadGraphData");
+            return;
+        }
         try {
-            const res = await fetch('/api/graph/edges', { headers: getAuthHeaders() });
+            const res = await fetch(`/api/graph?session_id=${encodeURIComponent(sessionId)}`, { headers: getAuthHeaders() });
             if (!res.ok) {
                 if (res.status === 401) {
                     console.error('认证失败，重新登录');
                     logout();
-                    return;
                 }
-                state.graphData.links = [];
-                updateStats();
-                if (state.Graph) state.Graph.graphData(state.graphData);
-                return;
+                throw new Error(`Failed to load graph data for ${sessionId}`);
             }
-            const edges = await res.json();
-            state.graphData.links = edges.map(e => ({
-                source: e.source,
-                target: e.target,
-                relation: e.relation || 'related_to',
-                weight: e.weight || 1,
-                properties: e.properties || {}
-            }));
+            const data = await res.json();
+            
+            // The backend returns 'edges', but force-graph uses 'links'
+            state.graphData = {
+                nodes: data.nodes || [],
+                links: data.edges || []
+            };
+    
             updateStats();
-            if (state.Graph) state.Graph.graphData(state.graphData);
+            if (state.Graph) {
+                state.Graph.graphData(state.graphData);
+                setTimeout(() => state.Graph.zoomToFit(400), 200);
+            }
+    
         } catch (e) {
-            console.error('加载边错误:', e);
+            console.error('加载图谱数据错误:', e);
         }
     }
     
@@ -545,16 +569,16 @@
     async function performDebugSearch() {
         const query = el.debugQuery.value.trim();
         if (!query) return;
-        
-        // 获取可选的 session_id 和 persona_id
-        // 如果没有输入框，则使用默认值或空
-        const sid = el.debugSession ? el.debugSession.value.trim() : '';
-        const pid = el.debugPersona ? el.debugPersona.value.trim() : '';
+
+        // Always use the currently loaded session ID for debugging
+        const sid = state.currentSessionId;
+        if (!sid) {
+            alert("Please load a session context first.");
+            return;
+        }
         
         // 构建查询参数
-        let url = `/api/graph/debug_search?q=${encodeURIComponent(query)}`;
-        if (sid) url += `&session_id=${encodeURIComponent(sid)}`;
-        if (pid) url += `&persona_id=${encodeURIComponent(pid)}`;
+        let url = `/api/debug_search?q=${encodeURIComponent(query)}&session_id=${encodeURIComponent(sid)}`;
         
         el.debugLoader.classList.remove('hidden');
         el.debugText.textContent = '';
@@ -639,11 +663,148 @@
         state.selectedNode = null;
         state.highlightNodes.clear();
         state.highlightLinks.clear();
-        loadNodes();
+        if (state.currentSessionId) {
+            loadGraphData(state.currentSessionId);
+        } else {
+            console.warn("No current session to reload.");
+        }
     });
     
     el.fitViewBtn.addEventListener('click', () => {
         if (state.Graph) state.Graph.zoomToFit(400);
+    });
+
+    // --- WebSocket 和监控功能 ---
+
+    function connectWebSocket() {
+        if (state.ws && state.ws.readyState === WebSocket.OPEN) return;
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = `${protocol}//${window.location.host}/ws/status`;
+        state.ws = new WebSocket(url);
+
+        state.ws.onopen = () => {
+            console.log('WebSocket connected');
+            addLogEntry({
+                level: 'INFO',
+                message: '监控服务已连接。',
+                timestamp: new Date().toISOString()
+            });
+        };
+
+        state.ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                switch (data.type) {
+                    case 'log':
+                        addLogEntry(data.payload);
+                        break;
+                    case 'task':
+                        addTaskEntry(data.payload);
+                        break;
+                    case 'message':
+                        addMessageEntry(data.payload);
+                        break;
+                }
+            } catch (e) {
+                console.error('Error parsing WebSocket message:', e);
+            }
+        };
+
+        state.ws.onclose = () => {
+            console.log('WebSocket disconnected. Retrying in 3 seconds...');
+            addLogEntry({
+                level: 'WARNING',
+                message: '监控服务已断开，3秒后重试...',
+                timestamp: new Date().toISOString()
+            });
+            setTimeout(connectWebSocket, 3000);
+        };
+
+        state.ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            addLogEntry({
+                level: 'ERROR',
+                message: '监控服务连接错误。',
+                timestamp: new Date().toISOString()
+            });
+            state.ws.close();
+        };
+    }
+
+    function addEntry(container, content, isHTML = false) {
+        if (state.logPaused) return;
+        const wasScrolledToBottom = container.scrollHeight - container.clientHeight <= container.scrollTop + 1;
+        
+        const entry = document.createElement('div');
+        if (isHTML) {
+            entry.innerHTML = content;
+        } else {
+            entry.textContent = content;
+        }
+        container.appendChild(entry);
+
+        if (wasScrolledToBottom) {
+            container.scrollTop = container.scrollHeight;
+        }
+    }
+
+    function addLogEntry(log) {
+        // 无论当前过滤器是什么，都将日志存入缓存
+        state.logCache.push(log);
+        // 如果日志级别匹配当前过滤器，则将其添加到视图
+        if (shouldDisplayLog(log)) {
+            renderLogEntry(log);
+        }
+    }
+
+    function shouldDisplayLog(log) {
+        return state.logLevel === 'ALL' || state.logLevel === log.level;
+    }
+
+    function renderLogEntry(log) {
+        const entry = document.createElement('div');
+        entry.className = 'log-entry';
+        entry.dataset.level = log.level;
+        entry.innerHTML = `<span style="color: #999;">${new Date(log.timestamp).toLocaleTimeString()}</span> [${log.level}] ${log.message}`;
+        
+        el.monitorLogs.appendChild(entry);
+        if (!state.logPaused) {
+            el.monitorLogs.scrollTop = el.monitorLogs.scrollHeight;
+        }
+    }
+
+    function rerenderLogs() {
+        el.monitorLogs.innerHTML = '';
+        state.logCache.forEach(log => {
+            if (shouldDisplayLog(log)) {
+                renderLogEntry(log);
+            }
+        });
+    }
+
+    function addTaskEntry(task) {
+        addEntry(el.monitorTasks, `<span style="color: #999;">${new Date(task.timestamp).toLocaleTimeString()}</span> ${task.content}`, true);
+    }
+
+    function addMessageEntry(message) {
+        addEntry(el.monitorMessages, `<span style="color: #999;">${new Date(message.timestamp).toLocaleTimeString()}</span> <strong>${message.sender}:</strong> ${message.text}`, true);
+    }
+
+    el.logLevelFilter.addEventListener('change', (e) => {
+        state.logLevel = e.target.value;
+        // 清空并重新筛选显示
+        el.monitorLogs.innerHTML = '';
+        // 这里可以重新请求历史日志或简单地等待新日志
+    });
+
+    el.logPauseToggle.addEventListener('click', () => {
+        state.logPaused = !state.logPaused;
+        el.logPauseToggle.textContent = state.logPaused ? '继续' : '暂停';
+    });
+
+    el.logClear.addEventListener('click', () => {
+        el.monitorLogs.innerHTML = '';
     });
     
     lucide.createIcons();

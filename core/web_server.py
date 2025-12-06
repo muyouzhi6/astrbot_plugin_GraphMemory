@@ -1,43 +1,66 @@
+# data/plugins/astrbot_plugin_GraphMemory/core/web_server.py
+
+"""
+该模块定义了 `WebServer` 类，它使用 FastAPI 和 Uvicorn 启动一个轻量级的 Web 服务器，
+为图记忆插件提供一个可视化的 Web 界面（WebUI）。
+"""
+
 import os
 import secrets
 import string
 import threading
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from astrbot.api import logger
 
 from .graph_engine import GraphEngine
 from .graph_service import GraphService
+from .monitoring_service import monitoring_service
 
 
 class WebServer:
+    """
+    管理插件的 Web 服务器，提供用于图可视化的 API 和前端资源。
+    """
     def __init__(self, engine: GraphEngine, config: dict):
+        """
+        初始化 WebServer。
+
+        Args:
+            engine (GraphEngine): GraphEngine 的实例，用于数据交互。
+            config (dict): 插件的配置字典。
+        """
         self.config = config
         self.host = config.get("webui_host", "0.0.0.0")
         self.port = config.get("webui_port", 8081)
         self.configured_key = config.get("webui_key", "")
 
-        # Initialize Service
         self.service = GraphService(engine)
 
-        # Authentication
-        self.auth_key = self.configured_key
-        if not self.auth_key:
-            self.auth_key = self._generate_key()
-            logger.warning(f"\n{'='*40}\n[GraphMemory] WebUI Access Key: {self.auth_key}\n{'='*40}")
+        # 如果未在配置中提供密钥，则生成一个随机密钥用于认证
+        self.auth_key = self.configured_key or self._generate_key()
+        if not self.configured_key:
+            logger.warning(f"\n{'='*40}\n[GraphMemory] WebUI 访问密钥: {self.auth_key}\n{'='*40}")
 
-        self.sessions = set() # Valid session tokens
+        self.sessions = set()  # 用于存储有效的会话令牌
 
-        # FastAPI App
-        self.app = FastAPI(title="GraphMemory WebUI", version="1.0.0")
+        # 初始化 FastAPI 应用
+        self.app = FastAPI(title="GraphMemory WebUI", version="2.0.0")
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=["*"],
+            allow_origins=["*"],  # 允许所有来源的跨域请求
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -47,202 +70,148 @@ class WebServer:
 
         self.server_thread = None
         self.server: uvicorn.Server | None = None
-        self.should_exit = False
 
-    def _generate_key(self, length=16):
+    def _generate_key(self, length=16) -> str:
+        """生成一个指定长度的随机字母数字密钥。"""
         chars = string.ascii_letters + string.digits
         return "".join(secrets.choice(chars) for _ in range(length))
 
     def _check_auth(self, request: Request):
-        # 1. Check Header Authorization: Bearer <token>
+        """
+        一个 FastAPI 依赖项，用于检查请求是否已通过身份验证。
+        它会检查请求头中的 `Authorization` Bearer 令牌或 cookie 中的会话令牌。
+        """
         auth_header = request.headers.get("Authorization")
+        token = None
         if auth_header and auth_header.startswith("Bearer "):
             token = auth_header.split(" ")[1]
-            if token in self.sessions:
-                return True
+        else:
+            token = request.cookies.get("session_token")
 
-        # 2. Check Cookie
-        token = request.cookies.get("session_token")
         if token and token in self.sessions:
             return True
 
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未经授权")
 
     def _setup_routes(self):
-
-        # --- Static & Templates ---
+        """设置 FastAPI 应用的所有路由。"""
         current_dir = os.path.dirname(os.path.abspath(__file__))
         resources_dir = os.path.join(current_dir, "../resources")
-        static_dir = os.path.join(resources_dir, "static")
 
+        # --- 静态文件路由 ---
         @self.app.get("/", response_class=HTMLResponse)
         async def index():
-            # Serve pure HTML/JS version (no build required)
+            """提供 WebUI 的主页 `index.html`。"""
             index_path = os.path.join(resources_dir, "index.html")
-            if os.path.exists(index_path):
-                return FileResponse(index_path)
+            return FileResponse(index_path) if os.path.exists(index_path) else HTMLResponse("<h1>WebUI 未找到。</h1>", 404)
 
-            return HTMLResponse(
-                content="<h1>WebUI not found.</h1>"
-                        "<p>index.html is missing in resources folder.</p>",
-                status_code=404
-            )
-
-        # Serve app.js from resources directory
         @self.app.get("/app.js")
         async def serve_app_js():
+            """提供 WebUI 的 JavaScript 文件 `app.js`。"""
             app_js_path = os.path.join(resources_dir, "app.js")
-            if os.path.exists(app_js_path):
-                return FileResponse(app_js_path, media_type="application/javascript")
-            return HTMLResponse(content="app.js not found", status_code=404)
+            return FileResponse(app_js_path, media_type="application/javascript") if os.path.exists(app_js_path) else HTMLResponse("app.js not found", 404)
 
-        # Mount static files if build directory exists (for backwards compatibility)
-        if os.path.isdir(static_dir):
-            self.app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-        @self.app.get("/favicon.ico")
+        @self.app.get("/favicon.ico", status_code=204)
         async def favicon():
-             # Return empty or default icon to prevent 404
-            return HTMLResponse(content="", status_code=204)
+            """为浏览器图标请求返回一个空响应。"""
+            return HTMLResponse(content="")
 
-        # --- Auth API ---
+        # --- 认证 API ---
         @self.app.post("/api/login")
         async def login(data: dict):
-            key = data.get("key")
-            if key == self.auth_key:
-                # Generate a session token
+            """处理登录请求，验证密钥并创建会话。"""
+            if data.get("key") == self.auth_key:
                 token = secrets.token_hex(16)
                 self.sessions.add(token)
-
-                # If using random one-time key, invalidate it (optional, but requested by user)
-                # But if configured_key is set, we don't invalidate it.
-                if not self.configured_key:
-                    # Logic: "Single use" - maybe means the key displayed in console is valid only once to establish a session?
-                    # Or maybe just "temporary until restart".
-                    # User said: "若无密钥自动生成随机密钥，单次有效" (If no key, auto-generate random key, valid once).
-                    # This implies once used to login, it cannot be used again?
-                    # But then if user opens another browser/device, they can't login.
-                    # Let's stick to "Temporary until restart" but maybe regenerate if we strictly follow "one-time"?
-                    # Let's interpret "single use" as: The random key is just for initial handshake.
-                    # But if we invalidate it, the user is locked out if they clear cookies.
-                    # For now, let's keep it valid for the runtime, unless explicitly asked to invalidate.
-                    # Re-reading: "单次有效" usually means "One-time Password (OTP)".
-                    # So I will regenerate it or clear it.
-                    pass
-
                 response = JSONResponse(content={"status": "success", "token": token})
                 response.set_cookie(key="session_token", value=token, httponly=True)
                 return response
-            else:
-                raise HTTPException(status_code=401, detail="Invalid key")
+            raise HTTPException(status_code=401, detail="无效的密钥")
 
-        # --- Graph API ---
-        @self.app.get("/api/graph/nodes")
-        async def get_nodes(
-            limit: int = 100,
-            offset: int = 0,
-            session_id: str | None = None,
-            persona_id: str | None = None,
-            _: bool = Depends(self._check_auth)
-        ):
-            return self.service.get_all_nodes(session_id, persona_id, limit, offset)
+        # --- 图数据 API (受保护) ---
 
-        @self.app.get("/api/graph/edges")
-        async def get_edges(
-            session_id: str | None = None,
-            persona_id: str | None = None,
-            _: bool = Depends(self._check_auth)
-        ):
-            return self.service.get_all_edges(session_id, persona_id)
+        @self.app.get("/api/contexts")
+        async def get_contexts(_: bool = Depends(self._check_auth)):
+            """API: 获取所有可用的会话上下文列表。"""
+            return await self.service.get_contexts()
 
-        @self.app.get("/api/graph/search")
-        async def search_nodes(
-            q: str,
-            session_id: str | None = None,
-            persona_id: str | None = None,
-            _: bool = Depends(self._check_auth)
-        ):
-            return self.service.search_nodes(q, session_id, persona_id)
+        @self.app.get("/api/graph")
+        async def get_graph_data(session_id: str, _: bool = Depends(self._check_auth)):
+            """API: 获取指定会话的完整图数据。"""
+            return await self.service.get_graph_data(session_id)
 
-        @self.app.get("/api/graph/debug_search")
-        async def debug_search(
-            q: str,
-            session_id: str = "default", # 调试默认值
-            persona_id: str = "default",
-            _: bool = Depends(self._check_auth)
-        ):
-            keywords = [k.strip() for k in q.split(" ") if k.strip()]
-            return await self.service.debug_search(keywords, session_id, persona_id)
-
-        @self.app.get("/api/graph/node/{node_id}")
-        async def get_node(node_id: str, _: bool = Depends(self._check_auth)):
-            return self.service.get_node_details(node_id)
-
-        @self.app.get("/api/graph/node/{node_id}/neighbors")
-        async def get_neighbors(node_id: str, _: bool = Depends(self._check_auth)):
-            return self.service.get_neighbors(node_id)
-
-        # --- CRUD API ---
-        @self.app.delete("/api/graph/node/{node_id}")
-        async def delete_node(node_id: str, _: bool = Depends(self._check_auth)):
+        @self.app.get("/api/debug_search")
+        async def debug_search(q: str, session_id: str, _: bool = Depends(self._check_auth)):
+            """API: 执行调试搜索并返回相关的子图数据。"""
             try:
-                self.service.delete_node(node_id)
-                return {"status": "success"}
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
+                vector_top_k = self.config.get("recall_vector_top_k", 5)
+                keyword_top_k = self.config.get("recall_keyword_top_k", 3)
 
-        @self.app.delete("/api/graph/edge")
-        async def delete_edge(src: str, tgt: str, rel: str, _: bool = Depends(self._check_auth)):
-            try:
-                self.service.delete_edge(src, tgt, rel)
-                return {"status": "success"}
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-
-        @self.app.post("/api/graph/node/{node_id}")
-        async def update_node(node_id: str, data: dict, _: bool = Depends(self._check_auth)):
-            try:
-                self.service.update_node(
-                    node_id,
-                    data["name"],
-                    data["type"],
-                    data.get("attributes", {}),
-                    data.get("importance", 0.5)
+                result = await self.service.debug_search(
+                    query=q,
+                    session_id=session_id,
+                    vector_top_k=vector_top_k,
+                    keyword_top_k=keyword_top_k
                 )
+                return result
+            except Exception as e:
+                logger.error(f"[GraphMemory WebUI] 调试搜索失败: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.delete("/api/node/{node_type}/{node_id}")
+        async def delete_node(node_type: str, node_id: str, _: bool = Depends(self._check_auth)):
+            """API: 删除图中的一个指定节点。"""
+            try:
+                await self.service.delete_node(node_id, node_type)
                 return {"status": "success"}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
 
-        @self.app.post("/api/graph/edge")
-        async def update_edge(data: dict, _: bool = Depends(self._check_auth)):
+        @self.app.delete("/api/edge")
+        async def delete_edge(from_id: str, to_id: str, rel_type: str, from_type: str, to_type: str, _: bool = Depends(self._check_auth)):
+            """API: 删除图中的一条指定关系（边）。"""
             try:
-                self.service.update_edge(
-                    data["source_id"],
-                    data["target_id"],
-                    data["old_relation"],
-                    data["new_relation"],
-                    data.get("weight", 1.0)
-                )
+                await self.service.delete_edge(from_id, to_id, rel_type, from_type, to_type)
                 return {"status": "success"}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.put("/api/node/{node_type}/{node_id}")
+        async def update_node(node_type: str, node_id: str, data: dict, _: bool = Depends(self._check_auth)):
+            """API: 更新一个节点的属性。"""
+            properties = data.get("properties", {})
+            if not properties:
+                raise HTTPException(status_code=400, detail="请求体中缺少 'properties' 字段。")
+            try:
+                await self.service.update_node(node_id, node_type, properties)
+                return {"status": "success"}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        # --- 监控 WebSocket API ---
+        @self.app.websocket("/ws/status")
+        async def websocket_endpoint(websocket: WebSocket):
+            """处理监控数据的 WebSocket 连接。"""
+            await monitoring_service.connect(websocket)
+            try:
+                while True:
+                    # 保持连接开放以接收广播
+                    # 客户端不需要发送数据，但我们需要一个循环来检测断开连接
+                    await websocket.receive_text()
+            except WebSocketDisconnect:
+                logger.info("[GraphMemory WebUI] WebSocket 客户端断开连接。")
+            finally:
+                await monitoring_service.disconnect(websocket)
 
     def start(self):
-        config = uvicorn.Config(
-            app=self.app,
-            host=self.host,
-            port=self.port,
-            log_level="info"
-        )
+        """在后台线程中启动 Uvicorn 服务器。"""
+        config = uvicorn.Config(app=self.app, host=self.host, port=self.port, log_level="info")
         self.server = uvicorn.Server(config)
-
         self.server_thread = threading.Thread(target=self.server.run, daemon=True)
         self.server_thread.start()
-        logger.info(f"[GraphMemory] WebUI started at http://{self.host}:{self.port}")
+        logger.info(f"[GraphMemory] WebUI 已启动，访问地址: http://{self.host}:{self.port}")
 
     def stop(self):
+        """停止 Uvicorn 服务器。"""
         if self.server:
             self.server.should_exit = True

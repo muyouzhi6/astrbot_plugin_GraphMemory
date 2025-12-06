@@ -212,6 +212,32 @@
             background: rgba(255,255,255,0.1);
             color: #fff;
         }
+
+        /* 监控面板样式 */
+        .monitor-log-area {
+            height: 200px;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.03);
+            border-radius: 0.5rem;
+            padding: 0.75rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.75rem;
+            color: #333;
+            margin-bottom: 1rem;
+        }
+        body.dark .monitor-log-area {
+            background: rgba(255,255,255,0.05);
+            color: #ccc;
+        }
+        .log-entry {
+            padding: 0.1rem 0;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+        }
+        body.dark .log-entry {
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .log-entry[data-level="ERROR"] { color: #ef4444; }
+        .log-entry[data-level="WARNING"] { color: #f97316; }
         
         .btn {
             width: 100%; padding: 0.5rem; margin-top: 0.5rem;
@@ -314,6 +340,7 @@
                 <div class="tabs" style="margin-bottom: 1.5rem; flex-shrink: 0;">
                     <button class="tab active" data-tab="info">信息</button>
                     <button class="tab" data-tab="debug">调试</button>
+                    <button class="tab" data-tab="monitor">监控</button>
                 </div>
 
                 <div class="sidebar-scroll">
@@ -330,13 +357,7 @@
                     <div id="tab-debug" class="hidden">
                         <div style="margin-bottom: 1rem;">
                             <label style="display: block; font-size: 0.625rem; font-weight: 700; color: #666; margin-bottom: 0.5rem; letter-spacing: 0.05em;">结构化查询</label>
-                            <textarea id="debug-query" rows="3" placeholder="输入关键词..." style="width: 100%; padding: 0.625rem; background: rgba(0,0,0,0.05); border: none; border-radius: 0.5rem; font-family: 'Courier New', monospace; resize: vertical; color: inherit;"></textarea>
-                        </div>
-                        
-                        <div style="margin-bottom: 1rem;">
-                            <label style="display: block; font-size: 0.625rem; font-weight: 700; color: #666; margin-bottom: 0.5rem; letter-spacing: 0.05em;">Session ID (可选)</label>
-                            <input type="text" id="debug-session" placeholder="Session ID" style="width: 100%; margin-bottom: 0.5rem;" />
-                            <input type="text" id="debug-persona" placeholder="Persona ID (可选)" style="width: 100%;" />
+                            <textarea id="debug-query" rows="4" placeholder="针对当前会话进行关键词和向量混合搜索..." style="width: 100%; padding: 0.625rem; background: rgba(0,0,0,0.05); border: none; border-radius: 0.5rem; font-family: 'Courier New', monospace; resize: vertical; color: inherit;"></textarea>
                         </div>
         
                         <button class="btn btn-primary" id="debug-search-btn">
@@ -352,6 +373,32 @@
                                 可视化结果
                             </button>
                             <pre id="debug-json" style="margin-top: 0.75rem; padding: 0.75rem; background: rgba(0,0,0,0.05); border-radius: 0.5rem; font-size: 0.625rem; font-family: 'Courier New', monospace; color: #666; overflow-x: auto; max-height: 10rem;"></pre>
+                        </div>
+                    </div>
+
+                    <!-- MONITOR Tab -->
+                    <div id="tab-monitor" class="hidden">
+                        <div style="margin-bottom: 1rem;">
+                            <label style="display: block; font-size: 0.625rem; font-weight: 700; color: #666; margin-bottom: 0.5rem; letter-spacing: 0.05em;">日志</label>
+                            <div id="monitor-logs" class="monitor-log-area"></div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <select id="log-level-filter" class="btn btn-secondary" style="flex: 1; text-align: left;">
+                                    <option value="ALL">所有等级</option>
+                                    <option value="INFO">INFO</option>
+                                    <option value="WARNING">WARNING</option>
+                                    <option value="ERROR">ERROR</option>
+                                </select>
+                                <button id="log-pause-toggle" class="btn btn-secondary">暂停</button>
+                                <button id="log-clear" class="btn btn-secondary">清空</button>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 1rem;">
+                            <label style="display: block; font-size: 0.625rem; font-weight: 700; color: #666; margin-bottom: 0.5rem; letter-spacing: 0.05em;">任务</label>
+                            <div id="monitor-tasks" class="monitor-log-area"></div>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 0.625rem; font-weight: 700; color: #666; margin-bottom: 0.5rem; letter-spacing: 0.05em;">消息</label>
+                            <div id="monitor-messages" class="monitor-log-area"></div>
                         </div>
                     </div>
                 </div>
