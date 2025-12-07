@@ -72,15 +72,6 @@ TRAVERSE_GRAPH = """
 # 计算图中所有节点的总数。
 COUNT_ALL_NODES = "MATCH (n) RETURN count(n)"
 
-# 查找可用于剪枝的最旧的一批消息（尚未被摘要的）。
-FIND_PRUNABLE_MESSAGES = """
-    MATCH (m:Message)
-    WHERE m.is_summarized IS NULL OR m.is_summarized = false
-    RETURN m.id
-    ORDER BY m.timestamp ASC
-    LIMIT $limit
-"""
-
 # 根据 ID 列表删除消息节点及其所有关联关系。
 DELETE_MESSAGES_BY_ID = "MATCH (m:Message) WHERE m.id IN $ids DETACH DELETE m"
 
@@ -134,8 +125,32 @@ ARCHIVE_MESSAGES = """
 
 # ================= 管理/WebUI (Admin/WebUI) =================
 
+# 批量删除没有任何关系的孤立实体。
+BATCH_DELETE_ISOLATED_ENTITIES = """
+    MATCH (e:Entity)
+    WHERE NOT (e)--()
+    WITH e LIMIT 1000
+    DETACH DELETE e
+    RETURN count(e)
+"""
+
+# 批量删除早于指定天数的、未被总结的原始消息。
+BATCH_DELETE_OLD_MESSAGES_BY_DAYS = """
+    MATCH (m:Message)
+    WHERE m.timestamp < ($current_ts_ms - ($days * 24 * 3600 * 1000)) AND (m.is_summarized IS NULL OR m.is_summarized = false)
+    WITH m LIMIT 1000
+    DETACH DELETE m
+    RETURN count(m)
+"""
+
 # 获取所有会话的 ID。
 GET_ALL_CONTEXTS = "MATCH (s:Session) RETURN s.id"
+
+# 将一个手动创建的实体直接关联到一个会话。
+LINK_ENTITY_TO_SESSION = """
+    MATCH (s:Session {id: $sid}), (e:Entity {name: $ename})
+    MERGE (s)-[:CONTAINS_ENTITY]->(e)
+"""
 
 # 获取指定会话的完整子图基础信息（节点和部分关系）。
 GET_FULL_GRAPH_BASE = """
@@ -143,7 +158,21 @@ GET_FULL_GRAPH_BASE = """
     OPTIONAL MATCH (u:User)-[:SENT]->(m:Message)-[:POSTED_IN]->(s)
     OPTIONAL MATCH (m)-[r_mentions:MENTIONS]->(e:Entity)
     OPTIONAL MATCH (s)-[r_has_mem:SESSION_HAS_MEMORY]->(mf:MemoryFragment)
-    RETURN s, u, m, r_mentions, e, r_has_mem, mf
+    OPTIONAL MATCH (s)-[:CONTAINS_ENTITY]->(e_manual:Entity)
+    RETURN s, u, m, r_mentions, e, r_has_mem, mf, e_manual
+"""
+
+# 优化后的全局图谱查询：仅查询 Entity 和 MemoryFragment 及其关系，忽略 Message 以减少数据量。
+GET_GLOBAL_GRAPH_OPTIMIZED_NODES = """
+    MATCH (n)
+    WHERE n:Entity OR n:MemoryFragment
+    RETURN n
+"""
+
+GET_GLOBAL_GRAPH_OPTIMIZED_EDGES = """
+    MATCH (a)-[r]->(b)
+    WHERE (a:Entity OR a:MemoryFragment) AND (b:Entity OR b:MemoryFragment)
+    RETURN a, r, b
 """
 
 # 获取指定会话中实体之间的 `RELATED_TO` 关系。
@@ -175,4 +204,29 @@ MIGRATE_LINK_MEMORIES = """
     MATCH (s:Session {id: $sid}), (mf:MemoryFragment)
     WHERE mf.id IN $mf_ids
     MERGE (s)-[:SESSION_HAS_MEMORY]->(mf)
+"""
+
+# 获取全局图谱的所有节点。
+GET_GLOBAL_GRAPH_NODES = "MATCH (n) RETURN n"
+
+
+# 获取全局图谱的所有关系。
+GET_GLOBAL_GRAPH_EDGES = "MATCH (a)-[r]->(b) RETURN a, r, b"
+
+# ================= Agentic 反思 (Reflection) =================
+
+# 获取用于反思的候选节点：包括最近的记忆片段和连接最广的实体。
+GET_REFLECTION_CANDIDATES = """
+    // 获取最近的5个记忆片段
+    MATCH (n:MemoryFragment)
+    RETURN n.id AS id, 'MemoryFragment' AS type, n.timestamp AS order_key
+    ORDER BY n.timestamp DESC
+    LIMIT 5
+    UNION ALL
+    // 获取连接度最高的5个实体
+    MATCH (n:Entity)
+    WITH n, size((n)--()) AS degree
+    RETURN n.name AS id, 'Entity' AS type, degree AS order_key
+    ORDER BY degree DESC
+    LIMIT 5
 """

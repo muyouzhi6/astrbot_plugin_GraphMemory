@@ -9,8 +9,9 @@ import os
 import secrets
 import string
 import threading
+import platform
+import asyncio
 
-import uvicorn
 from fastapi import (
     Depends,
     FastAPI,
@@ -69,7 +70,7 @@ class WebServer:
         self._setup_routes()
 
         self.server_thread = None
-        self.server: uvicorn.Server | None = None
+        self.stop_event = threading.Event()
 
     def _generate_key(self, length=16) -> str:
         """生成一个指定长度的随机字母数字密钥。"""
@@ -136,8 +137,8 @@ class WebServer:
             return await self.service.get_contexts()
 
         @self.app.get("/api/graph")
-        async def get_graph_data(session_id: str, _: bool = Depends(self._check_auth)):
-            """API: 获取指定会话的完整图数据。"""
+        async def get_graph_data(session_id: str | None = None, _: bool = Depends(self._check_auth)):
+            """API: 获取图数据。如果提供了 session_id，则为该会话的子图；否则为全局图谱。"""
             return await self.service.get_graph_data(session_id)
 
         @self.app.get("/api/debug_search")
@@ -188,6 +189,54 @@ class WebServer:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
 
+        @self.app.post("/api/batch-delete")
+        async def batch_delete(data: dict, _: bool = Depends(self._check_auth)):
+            """API: 执行预定义的批量删除任务。"""
+            task_name = data.get("task_name")
+            if not task_name:
+                raise HTTPException(status_code=400, detail="请求体中缺少 'task_name' 字段。")
+
+            try:
+                kwargs = data.get("params", {})
+                deleted_count = await self.service.batch_delete(task_name, **kwargs)
+                return {"status": "success", "deleted_count": deleted_count}
+            except Exception as e:
+                logger.error(f"[GraphMemory WebUI] 批量删除任务 '{task_name}' 失败: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/node")
+        async def create_node(data: dict, _: bool = Depends(self._check_auth)):
+            """API: 手动创建一个新节点。"""
+            node_type = data.get("node_type")
+            properties = data.get("properties")
+            if not node_type or not properties:
+                raise HTTPException(status_code=400, detail="请求体中缺少 'node_type' 或 'properties' 字段。")
+
+            try:
+                success = await self.service.create_node(node_type, properties)
+                if success:
+                    return {"status": "success"}
+                else:
+                    raise HTTPException(status_code=500, detail="创建节点失败。")
+            except Exception as e:
+                logger.error(f"[GraphMemory WebUI] 创建节点失败: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/link")
+        async def link_entity(data: dict, _: bool = Depends(self._check_auth)):
+            """API: 将实体关联到会话。"""
+            session_id = data.get("session_id")
+            entity_name = data.get("entity_name")
+            if not session_id or not entity_name:
+                raise HTTPException(status_code=400, detail="请求体中缺少 'session_id' 或 'entity_name' 字段。")
+
+            try:
+                await self.service.link_entity_to_session(session_id, entity_name)
+                return {"status": "success"}
+            except Exception as e:
+                logger.error(f"[GraphMemory WebUI] 关联实体失败: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+
         # --- 监控 WebSocket API ---
         @self.app.websocket("/ws/status")
         async def websocket_endpoint(websocket: WebSocket):
@@ -203,15 +252,49 @@ class WebServer:
             finally:
                 await monitoring_service.disconnect(websocket)
 
+    def _run_fastapi_server(self):
+        """在单独的线程中运行 FastAPI 服务器。"""
+        # 在 Windows 上，为这个线程创建一个新的 SelectorEventLoop
+        if platform.system() == "Windows":
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        
+        # 为这个线程创建新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # 使用 uvicorn 但在新的事件循环中运行
+            import uvicorn
+            
+            config = uvicorn.Config(
+                app=self.app,
+                host=self.host,
+                port=self.port,
+                log_level="info",
+                loop="asyncio"
+            )
+            server = uvicorn.Server(config)
+            
+            # 在当前线程的事件循环中运行服务器
+            loop.run_until_complete(server.serve())
+        except Exception as e:
+            logger.error(f"[GraphMemory] WebUI 服务器运行时出错: {e}", exc_info=True)
+        finally:
+            loop.close()
+
     def start(self):
-        """在后台线程中启动 Uvicorn 服务器。"""
-        config = uvicorn.Config(app=self.app, host=self.host, port=self.port, log_level="info")
-        self.server = uvicorn.Server(config)
-        self.server_thread = threading.Thread(target=self.server.run, daemon=True)
+        """在后台线程中启动 FastAPI 服务器。"""
+        self.stop_event.clear()
+        self.server_thread = threading.Thread(target=self._run_fastapi_server, daemon=True)
         self.server_thread.start()
         logger.info(f"[GraphMemory] WebUI 已启动，访问地址: http://{self.host}:{self.port}")
 
     def stop(self):
-        """停止 Uvicorn 服务器。"""
-        if self.server:
-            self.server.should_exit = True
+        """停止 FastAPI 服务器。"""
+        self.stop_event.set()
+        # 对于 daemon 线程，等待其结束
+        if self.server_thread and self.server_thread.is_alive():
+            self.server_thread.join(timeout=2.0)
+            if self.server_thread.is_alive():
+                logger.warning("[GraphMemory] WebUI 服务器线程未能在超时时间内停止")
+        logger.info("[GraphMemory] WebUI 服务器已停止")

@@ -17,6 +17,7 @@ from .buffer_manager import BufferManager
 from .extractor import KnowledgeExtractor
 from .graph_engine import JIEBA_AVAILABLE, GraphEngine
 from .monitoring_service import monitoring_service
+from .reflection_engine import ReflectionEngine
 
 
 class PluginService:
@@ -40,17 +41,19 @@ class PluginService:
         self.persona_isolation_exceptions = set(self.config.get("persona_isolation_exceptions", []))
         self.max_global_nodes = self.config.get("max_global_nodes", 10000)
         self.prune_interval = self.config.get("prune_interval", 3600)
+        self.pruning_message_max_days = self.config.get("pruning_message_max_days", 90)
         self.consolidation_threshold = self.config.get("consolidation_threshold", 50)
         self.enable_query_rewriting = self.config.get("enable_query_rewriting", True)
         self.recall_vector_top_k = self.config.get("recall_vector_top_k", 5)
         self.recall_keyword_top_k = self.config.get("recall_keyword_top_k", 3)
         self.recall_max_items = self.config.get("recall_max_items", 7)
+        self.enable_reflection = self.config.get("enable_reflection", False)
+        self.reflection_interval = self.config.get("reflection_interval", 7200)
 
         logger.debug(f"[GraphMemory] 插件数据路径: {plugin_data_path}")
 
         # --- 核心组件初始化 ---
         self.embedding_provider: Any = None
-        # 在 __init__ 中不再获取 provider，仅初始化 GraphEngine
         self.graph_engine = GraphEngine(plugin_data_path, None)
         self.extractor = KnowledgeExtractor(
             context=context,
@@ -62,6 +65,7 @@ class PluginService:
             max_size=20 if self.enable_group_learning else 10,
             max_wait_seconds=60,
         )
+        self.reflection_engine = ReflectionEngine(self)
 
         if not JIEBA_AVAILABLE:
             logger.warning("[GraphMemory] 未找到 'jieba' 库，关键词搜索功能将受限。为了在非英语语言上获得更好的性能，请运行 'pip install jieba'。")
@@ -85,6 +89,8 @@ class PluginService:
             logger.warning("[GraphMemory] 未配置 embedding_provider_id，向量相关功能将不可用。")
 
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
+        if self.enable_reflection:
+            await self.reflection_engine.start(self.reflection_interval)
         logger.info(f"[GraphMemory] PluginService 已启动。群聊学习状态: {self.enable_group_learning}")
 
     async def shutdown(self):
@@ -96,6 +102,7 @@ class PluginService:
             except asyncio.CancelledError:
                 pass
         await self.buffer_manager.shutdown()
+        await self.reflection_engine.stop()
         self.graph_engine.close()
 
     async def inject_memory(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -202,7 +209,10 @@ class PluginService:
                 prune_counter += check_interval
                 if prune_counter >= self.prune_interval:
                     prune_counter = 0
-                    await self.graph_engine.prune_graph(max_nodes=self.max_global_nodes)
+                    await self.graph_engine.prune_graph(
+                        max_nodes=self.max_global_nodes,
+                        message_max_days=self.pruning_message_max_days
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as e:

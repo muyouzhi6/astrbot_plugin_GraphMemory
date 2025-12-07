@@ -26,9 +26,18 @@ class GraphService:
         # 在未来的版本中，可以扩展此方法以正确地检索每个人格。
         return [{"session_id": sid, "persona_id": "default"} for sid in session_ids]
 
-    async def get_graph_data(self, session_id: str) -> dict | None:
-        """获取指定会话上下文的完整图数据，用于 WebUI 可视化。"""
-        return await self.engine.get_full_graph(session_id)
+    async def get_graph_data(self, session_id: str | None) -> dict | None:
+        """
+        获取图数据用于 WebUI 可视化。
+        如果提供了 session_id，则获取该会话的子图。
+        如果 session_id 为 "global" 或 None，则获取全局知识图谱。
+        """
+        if session_id and session_id != "global":
+            logger.info(f"[GraphService] 正在为会话 '{session_id}' 获取图谱数据...")
+            return await self.engine.get_full_graph(session_id)
+        else:
+            logger.info("[GraphService] 正在获取优化后的全局图谱数据...")
+            return await self.engine.get_global_graph_optimized()
 
     async def debug_search(self, query: str, session_id: str, vector_top_k: int, keyword_top_k: int) -> dict:
         """
@@ -68,3 +77,18 @@ class GraphService:
         """更新一个节点的属性。"""
         logger.info(f"[GraphService] 正在使用属性 {properties} 更新节点 {node_id}")
         await self.engine.update_node_properties(node_id, node_type, properties)
+
+    async def batch_delete(self, task_name: str, **kwargs) -> int:
+        """执行预定义的批量删除任务。"""
+        logger.info(f"[GraphService] 正在执行批量删除任务: {task_name}")
+        return await self.engine.batch_delete(task_name, **kwargs)
+
+    async def create_node(self, node_type: str, properties: dict) -> bool:
+        """手动创建一个新节点。"""
+        logger.info(f"[GraphService] 正在创建类型为 {node_type} 的新节点")
+        return await self.engine.add_node_manually(node_type, properties)
+
+    async def link_entity_to_session(self, session_id: str, entity_name: str):
+        """将一个实体关联到指定会话。"""
+        logger.info(f"[GraphService] 正在将实体 '{entity_name}' 关联到会话 '{session_id}'")
+        await self.engine.link_entity_to_session(session_id, entity_name)

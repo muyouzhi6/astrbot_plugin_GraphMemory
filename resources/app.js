@@ -34,6 +34,7 @@
         sidebarToggle: document.getElementById('sidebar-toggle-btn'),
         sidebar: document.getElementById('sidebar'),
         searchInput: document.getElementById('search-input'),
+        sessionSelector: document.getElementById('session-selector'),
         tabInfo: document.getElementById('tab-info'),
         tabDebug: document.getElementById('tab-debug'),
         tabMonitor: document.getElementById('tab-monitor'),
@@ -62,7 +63,14 @@
         monitorMessages: document.getElementById('monitor-messages'),
         logLevelFilter: document.getElementById('log-level-filter'),
         logPauseToggle: document.getElementById('log-pause-toggle'),
-        logClear: document.getElementById('log-clear')
+        logClear: document.getElementById('log-clear'),
+        toolsBtn: document.getElementById('tools-btn'),
+        linkModeBtn: document.getElementById('link-mode-btn'),
+        modalOverlay: document.getElementById('modal-overlay'),
+        modalBox: document.getElementById('modal-box'),
+        modalTitle: document.getElementById('modal-title'),
+        modalContent: document.getElementById('modal-content'),
+        modalCloseBtn: document.getElementById('modal-close-btn')
     };
     
     function getAuthHeaders() {
@@ -121,7 +129,117 @@
             el.loginError.textContent = '连接错误: ' + e.message;
         }
     }
-    
+
+    function openModal(title, content) {
+        el.modalTitle.textContent = title;
+        el.modalContent.innerHTML = content;
+        el.modalOverlay.classList.remove('hidden');
+    }
+
+    function closeModal() {
+        el.modalOverlay.classList.add('hidden');
+        el.modalContent.innerHTML = '';
+    }
+
+    function showBatchOperationsModal() {
+        const content = `
+            <p style="font-size: 0.875rem; color: #999; margin-bottom: 1.5rem;">选择一个预设的维护任务来清理当前图谱。</p>
+            <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                <button class="btn btn-secondary" data-task="delete_isolated_entities">删除孤立实体</button>
+                <button class="btn btn-secondary" data-task="delete_old_messages" data-days="90">删除90天前的原始消息</button>
+            </div>
+            <div id="batch-op-status" style="margin-top: 1rem; font-size: 0.75rem; color: #666;"></div>
+        `;
+        openModal('高级工具', content);
+        lucide.createIcons();
+
+        document.querySelectorAll('#modal-content .btn[data-task]').forEach(button => {
+            button.addEventListener('click', async (e) => {
+                const taskName = e.currentTarget.dataset.task;
+                const days = e.currentTarget.dataset.days;
+                const statusEl = document.getElementById('batch-op-status');
+                
+                statusEl.textContent = `正在执行: ${taskName}...`;
+                
+                try {
+                    const params = days ? { days: parseInt(days) } : {};
+                    const res = await fetch('/api/batch-delete', {
+                        method: 'POST',
+                        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ task_name: taskName, params: params })
+                    });
+
+                    if (!res.ok) throw new Error(`服务器错误: ${res.statusText}`);
+                    
+                    const result = await res.json();
+                    statusEl.textContent = `成功！删除了 ${result.deleted_count} 个节点。图谱将自动刷新。`;
+
+                    // 等待一会再刷新，让用户看到成功信息
+                    setTimeout(() => {
+                        closeModal();
+                        el.reloadBtn.click(); // 触发刷新
+                    }, 2000);
+
+                } catch (err) {
+                    statusEl.textContent = `错误: ${err.message}`;
+                }
+            });
+        });
+    }
+
+    function showLinkEntityModal() {
+        if (!state.selectedNode || state.selectedNode.type !== 'Entity') {
+            alert('请先选择一个实体节点。');
+            return;
+        }
+        
+        const entityName = state.selectedNode.name;
+        const content = `
+            <p style="font-size: 0.875rem; color: #999; margin-bottom: 1.5rem;">将实体 <strong>${entityName}</strong> 关联到当前会话。</p>
+            <div style="margin-bottom: 1rem;">
+                <label style="display: block; font-size: 0.75rem; font-weight: 600; margin-bottom: 0.5rem;">目标会话 ID</label>
+                <input type="text" id="link-session-id" value="${state.currentSessionId !== 'global' ? state.currentSessionId : ''}" style="width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 0.25rem; background: transparent; color: inherit;">
+            </div>
+            <button id="confirm-link-btn" class="btn btn-primary">确认关联</button>
+            <div id="link-status" style="margin-top: 1rem; font-size: 0.75rem; color: #666;"></div>
+        `;
+        openModal('关联实体', content);
+        
+        document.getElementById('confirm-link-btn').addEventListener('click', async () => {
+            const sessionId = document.getElementById('link-session-id').value.trim();
+            const statusEl = document.getElementById('link-status');
+            
+            if (!sessionId) {
+                statusEl.textContent = '请输入会话 ID。';
+                return;
+            }
+            
+            statusEl.textContent = '正在关联...';
+            
+            try {
+                const res = await fetch('/api/link', {
+                    method: 'POST',
+                    headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId, entity_name: entityName })
+                });
+                
+                if (!res.ok) throw new Error(`服务器错误: ${res.statusText}`);
+                
+                statusEl.textContent = '关联成功！';
+                setTimeout(() => {
+                    closeModal();
+                    if (state.currentSessionId === sessionId) {
+                        el.reloadBtn.click();
+                    }
+                }, 1500);
+            } catch (err) {
+                statusEl.textContent = `错误: ${err.message}`;
+            }
+        });
+    }
+
+
+
     function logout() {
         state.isLoggedIn = false;
         localStorage.removeItem('session_token');
@@ -343,53 +461,85 @@
     }
     
     async function initApp() {
-        // Ensure graph is initialized visually
+        // 1. 立即初始化空的图谱画布
         initGraph();
-    
+
+        // 2. 异步、非阻塞地获取会话列表并填充下拉菜单
         try {
             const res = await fetch('/api/contexts', { headers: getAuthHeaders() });
-            if (!res.ok) throw new Error('Failed to fetch contexts');
-            const contexts = await res.json();
-    
-            if (contexts && contexts.length > 0) {
-                // For now, just load the first context
-                // TODO: Implement a dropdown to select context
-                const firstContext = contexts[0];
-                state.currentSessionId = firstContext.session_id;
-                await loadGraphData(state.currentSessionId);
+            if (!res.ok) {
+                console.error('无法获取会话列表用于填充下拉菜单。');
             } else {
-                console.warn("No contexts found to load.");
-                // Clear graph data if no contexts
-                state.graphData = { nodes: [], links: [] };
-                if (state.Graph) state.Graph.graphData(state.graphData);
-                updateStats();
+                const contexts = await res.json();
+                console.log('获取到的会话上下文:', contexts);
+
+                el.sessionSelector.innerHTML = '<option value="global">全局视图</option>';
+                if (contexts && contexts.length > 0) {
+                    contexts.forEach(ctx => {
+                        const option = document.createElement('option');
+                        option.value = ctx.session_id;
+                        // 截断过长的 ID 以优化显示
+                        const displayName = ctx.session_id.length > 30 ? `...${ctx.session_id.slice(-27)}` : ctx.session_id;
+                        option.textContent = displayName;
+                        el.sessionSelector.appendChild(option);
+                    });
+                } else {
+                    console.log('No contexts found to load.');
+                }
             }
         } catch (e) {
-            console.error("Error initializing app:", e);
-            if (e.response && e.response.status === 401) logout();
+            console.error("填充会话下拉菜单时出错:", e);
         }
+
+        // 3. 无论会话列表是否获取成功，都默认加载全局视图作为初始状态
+        console.log("默认加载全局视图...");
+        el.sessionSelector.value = 'global';
+        await loadGraphData('global');
     }
     
     async function loadGraphData(sessionId) {
-        if (!sessionId) {
-            console.error("No session ID provided to loadGraphData");
-            return;
-        }
+        // sessionId 可以是一个字符串 ID 或 "global"
+        console.log(`开始加载图谱数据，视图: ${sessionId}`); // 增加诊断日志
+        state.currentSessionId = sessionId;
+        
+        const url = (sessionId && sessionId !== 'global')
+            ? `/api/graph?session_id=${encodeURIComponent(sessionId)}`
+            : '/api/graph';
+
         try {
-            const res = await fetch(`/api/graph?session_id=${encodeURIComponent(sessionId)}`, { headers: getAuthHeaders() });
+            const res = await fetch(url, { headers: getAuthHeaders() });
             if (!res.ok) {
                 if (res.status === 401) {
                     console.error('认证失败，重新登录');
                     logout();
                 }
-                throw new Error(`Failed to load graph data for ${sessionId}`);
+                throw new Error(`Failed to load graph data for view: ${sessionId}`);
             }
             const data = await res.json();
             
-            // The backend returns 'edges', but force-graph uses 'links'
+            // 检查数据是否有效
+            if (!data || data === null) {
+                console.error('收到空的图谱数据');
+                state.graphData = { nodes: [], links: [] };
+                updateStats();
+                return;
+            }
+            
+            // 过滤掉无效的节点和边
+            const validNodes = (data.nodes || []).filter(n => n && n.id);
+            const nodeIds = new Set(validNodes.map(n => n.id));
+            
+            // 只保留source和target都存在的边
+            const validEdges = (data.edges || []).filter(e =>
+                e && e.source && e.target && nodeIds.has(e.source) && nodeIds.has(e.target)
+            );
+            
+            console.log(`有效节点: ${validNodes.length}, 有效边: ${validEdges.length}`);
+            
+            // The backend returns 'edges' with 'source'/'target', force-graph uses 'links'
             state.graphData = {
-                nodes: data.nodes || [],
-                links: data.edges || []
+                nodes: validNodes,
+                links: validEdges
             };
     
             updateStats();
@@ -642,6 +792,11 @@
     el.logoutBtn.addEventListener('click', logout);
     el.themeToggle.addEventListener('click', toggleTheme);
     el.sidebarToggle.addEventListener('click', toggleSidebar);
+
+    el.sessionSelector.addEventListener('change', (e) => {
+        const newSessionId = e.target.value;
+        loadGraphData(newSessionId);
+    });
     
     document.querySelectorAll('.tab').forEach(tab => {
         tab.addEventListener('click', () => switchTab(tab.dataset.tab));
@@ -672,6 +827,14 @@
     
     el.fitViewBtn.addEventListener('click', () => {
         if (state.Graph) state.Graph.zoomToFit(400);
+    });
+
+    el.toolsBtn.addEventListener('click', showBatchOperationsModal);
+    el.modalCloseBtn.addEventListener('click', closeModal);
+    el.modalOverlay.addEventListener('click', (e) => {
+        if (e.target === el.modalOverlay) {
+            closeModal();
+        }
     });
 
     // --- WebSocket 和监控功能 ---

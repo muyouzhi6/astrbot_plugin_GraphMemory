@@ -54,6 +54,12 @@
         "hint": "每隔多少秒检查一次图谱是否需要修剪。",
         "default": 3600
     },
+    "pruning_message_max_days": {
+        "type": "int",
+        "description": "原始消息最大保留天数",
+        "hint": "在清理阶段一，创建时间早于此天数的原始消息将被删除。",
+        "default": 90
+    },
     "summarize_interval": {
         "type": "int",
         "description": "记忆摘要间隔 (秒)",
@@ -107,5 +113,17 @@
         "description": "WebUI 访问密钥",
         "hint": "用于访问 WebUI 的密钥。如果留空，将在启动时生成一个随机密钥。",
         "default": ""
+    },
+    "enable_reflection": {
+        "type": "bool",
+        "description": "启用 Agentic 反思",
+        "hint": "是否启用后台反思循环，用于事实修正和关系推断。需要消耗额外的 LLM token。",
+        "default": false
+    },
+    "reflection_interval": {
+        "type": "int",
+        "description": "反思间隔 (秒)",
+        "hint": "每隔多少秒执行一轮反思周期。",
+        "default": 7200
     }
 }

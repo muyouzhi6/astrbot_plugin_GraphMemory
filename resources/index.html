@@ -337,6 +337,10 @@
                     <input type="text" id="search-input" placeholder="搜索节点..." style="padding-left: 2.5rem;" />
                 </div>
 
+                <div id="view-selector-container" style="margin-bottom: 1.5rem; flex-shrink: 0;">
+                    <select id="session-selector" class="btn btn-secondary" style="width: 100%; text-align: left;"></select>
+                </div>
+
                 <div class="tabs" style="margin-bottom: 1.5rem; flex-shrink: 0;">
                     <button class="tab active" data-tab="info">信息</button>
                     <button class="tab" data-tab="debug">调试</button>
@@ -402,6 +406,16 @@
                         </div>
                     </div>
                 </div>
+                <div style="padding-top: 1rem; border-top: 1px solid rgba(0,0,0,0.05); margin-top: auto;">
+                     <button id="tools-btn" class="btn btn-secondary">
+                        <i data-lucide="wrench" style="width: 0.875rem; height: 0.875rem;"></i>
+                        <span>高级工具</span>
+                    </button>
+                    <button id="link-mode-btn" class="btn btn-secondary" style="margin-top: 0.5rem;">
+                        <i data-lucide="link" style="width: 0.875rem; height: 0.875rem;"></i>
+                        <span>关联实体到会话</span>
+                    </button>
+                </div>
             </aside>
 
             <!-- 图表 -->
@@ -421,6 +435,17 @@
 
         <!-- Tooltip -->
         <div id="tooltip" class="hidden"></div>
+
+        <!-- Modal -->
+        <div id="modal-overlay" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 100; display: flex; align-items: center; justify-content: center;">
+            <div id="modal-box" class="glass" style="width: 100%; max-width: 32rem; padding: 2rem; border-radius: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                    <h3 id="modal-title" style="font-size: 1.125rem; font-weight: 600;">Modal Title</h3>
+                    <button id="modal-close-btn" class="icon-btn"><i data-lucide="x"></i></button>
+                </div>
+                <div id="modal-content"></div>
+            </div>
+        </div>
     </div>
 
     <script src="app.js"></script>

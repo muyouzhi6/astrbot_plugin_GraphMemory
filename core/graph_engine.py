@@ -32,18 +32,24 @@ from .queries import (
     ADD_SESSION,
     ADD_USER,
     ARCHIVE_MESSAGES,
+    BATCH_DELETE_ISOLATED_ENTITIES,
+    BATCH_DELETE_OLD_MESSAGES_BY_DAYS,
     COUNT_ALL_NODES,
     CREATE_MEMORY_FRAGMENT,
     DELETE_EDGE,
-    DELETE_MESSAGES_BY_ID,
     DELETE_NODE_BY_ID,
-    FIND_PRUNABLE_MESSAGES,
     FIND_SESSIONS_FOR_CONSOLIDATION,
     GET_ALL_CONTEXTS,
     GET_FULL_GRAPH_BASE,
     GET_FULL_GRAPH_RELATIONS,
+    GET_GLOBAL_GRAPH_EDGES,
+    GET_GLOBAL_GRAPH_NODES,
+    GET_GLOBAL_GRAPH_OPTIMIZED_EDGES,
+    GET_GLOBAL_GRAPH_OPTIMIZED_NODES,
     GET_MESSAGES_FOR_CONSOLIDATION,
+    GET_REFLECTION_CANDIDATES,
     KEYWORD_SEARCH_ENTITY,
+    LINK_ENTITY_TO_SESSION,
     LINK_FRAGMENT_TO_SESSION,
     LINK_FRAGMENT_TO_USERS,
     MIGRATE_FIND_MEMORIES,
@@ -111,7 +117,9 @@ class GraphEngine:
         embedding_dim = get_embedding_dim_from_provider(embedding_provider)
 
         # 重新初始化 schema 以确保维度正确
-        logger.info(f"检测到 Embedding Provider 更新，重新检查 Schema (维度: {embedding_dim})...")
+        logger.info(
+            f"检测到 Embedding Provider 更新，重新检查 Schema (维度: {embedding_dim})..."
+        )
         initialize_schema(self.conn, embedding_dim)
 
     def execute_query(self, query: str, params: dict | None = None) -> Any:
@@ -200,6 +208,11 @@ class GraphEngine:
         }
         await self._run_in_executor(self.execute_query, ADD_MENTION, params)
 
+    async def link_entity_to_session(self, session_id: str, entity_name: str):
+        """异步将一个实体关联到指定会话。"""
+        params = {"sid": session_id, "ename": entity_name}
+        await self._run_in_executor(self.execute_query, LINK_ENTITY_TO_SESSION, params)
+
     # ================= 查 / 召回 (Read) =================
 
     async def search(
@@ -213,17 +226,6 @@ class GraphEngine:
     ) -> str:
         """
         执行多阶段的记忆搜索，并返回格式化为文本的上下文。
-
-        Args:
-            query (str): (重写后的) 用户查询。
-            query_embedding (list[float]): 查询的向量表示。
-            session_id (str): 当前会话 ID。
-            vector_top_k (int): 向量搜索的 top_k。
-            keyword_top_k (int): 关键词搜索的 top_k。
-            max_items (int): 最终返回的最大上下文项目数。
-
-        Returns:
-            str: 格式化后的上下文文本，用于注入到 LLM 的 prompt 中。
         """
         return await self._run_in_executor(
             self._search_sync,
@@ -245,10 +247,8 @@ class GraphEngine:
         max_items: int,
     ) -> str:
         """搜索逻辑的同步实现。"""
-        # --- 阶段 1: 混合召回 (Hybrid Retrieval) ---
         recalled_items = []
 
-        # 1.1 向量召回：在实体、消息和记忆摘要上进行相似度搜索
         entity_res = self._vector_search(
             "Entity", query_embedding, session_id, top_k=vector_top_k
         )
@@ -273,10 +273,8 @@ class GraphEngine:
             ]
         )
 
-        # 1.2 关键词召回：提取查询中的关键词，在实体上进行文本搜索
         keywords = self._extract_keywords_local(query)
         kw_entity_res = self._keyword_search(keywords, session_id, limit=keyword_top_k)
-        # 添加关键词召回的实体，同时去重
         existing_entity_names = {
             item["name"] for item in recalled_items if item["type"] == "Entity"
         }
@@ -289,13 +287,9 @@ class GraphEngine:
         if not recalled_items:
             return ""
 
-        # --- 阶段 2: 图扩展 (Graph Expansion) ---
-        # 将召回的节点作为种子，在图上进行遍历，获取其一跳邻居和关系
         seed_ids = {item.get("id") or item.get("name") for item in recalled_items}
         traversal_context = self._traverse_graph(list(seed_ids))
 
-        # --- 阶段 3: 重排序与格式化 (Rerank & Format) ---
-        # 对所有召回和扩展的项进行加权排序，并格式化为最终的文本上下文
         return self._rerank_and_format_context(
             recalled_items, traversal_context, max_items
         )
@@ -305,19 +299,21 @@ class GraphEngine:
     ) -> list[dict]:
         """
         在指定的表上执行向量搜索。
-
-        Returns:
-            list[dict]: 包含节点数据和相似度得分的字典列表。
         """
         params = {"vector": vector, "sid": session_id, "top_k": top_k}
 
-        # 根据表名选择合适的查询语句
         if table_name == "Entity":
-            query = VECTOR_SEARCH_ENTITY.format(table_name=table_name, top_k_multiplied=top_k * 5)
+            query = VECTOR_SEARCH_ENTITY.format(
+                table_name=table_name, top_k_multiplied=top_k * 5
+            )
         elif table_name == "Message":
-            query = VECTOR_SEARCH_MESSAGE.format(table_name=table_name, top_k_multiplied=top_k * 5)
+            query = VECTOR_SEARCH_MESSAGE.format(
+                table_name=table_name, top_k_multiplied=top_k * 5
+            )
         elif table_name == "MemoryFragment":
-            query = VECTOR_SEARCH_FRAGMENT.format(table_name=table_name, top_k_multiplied=top_k * 5)
+            query = VECTOR_SEARCH_FRAGMENT.format(
+                table_name=table_name, top_k_multiplied=top_k * 5
+            )
         else:
             return []
 
@@ -337,7 +333,6 @@ class GraphEngine:
             keywords = jieba.analyse.extract_tags(query, topK=3, withWeight=False)
             return [str(k) for k in keywords]
         else:
-            # 如果没有 jieba，使用简单的分词作为后备
             return [w for w in query.split() if len(w) > 2][:3]
 
     def _keyword_search(
@@ -374,7 +369,6 @@ class GraphEngine:
                 n, r, m = res.get_next()
                 context["nodes"].append(n)
                 context["nodes"].append(m)
-                # 将 Kuzu 的关系字典格式化为边信息
                 edge_info = {
                     "from": n.get("id") or n.get("name"),
                     "to": m.get("id") or m.get("name"),
@@ -392,7 +386,6 @@ class GraphEngine:
     ) -> str:
         """
         对所有召回和扩展的上下文信息进行重排序，并格式化为最终的文本输出。
-        排序逻辑考虑了初始得分、节点类型权重和时间衰减。
         """
         import time
         from datetime import datetime
@@ -400,80 +393,67 @@ class GraphEngine:
         context_items = []
         processed_ids = set()
 
-        # 1. 处理召回的项，计算初始得分
         for item in recalled_items:
             item_id = item.get("id") or item.get("name")
             if item_id in processed_ids:
                 continue
 
             score = item.get("score", 0.0)
-
-            # 应用类型权重：摘要 > 实体 > 消息
             type_weights = {"MemoryFragment": 1.5, "Entity": 1.2, "Message": 1.0}
             score *= type_weights.get(item["type"], 1.0)
 
-            # 对有时间戳的节点（如消息）应用时间衰减
             timestamp = item.get("timestamp")
             if timestamp:
                 age_days = (time.time() - timestamp) / (3600 * 24)
-                decay_factor = 1 / (1 + age_days * 0.1)  # 简单的衰减函数
+                decay_factor = 1 / (1 + age_days * 0.1)
                 score *= decay_factor
 
             context_items.append({"id": item_id, "data": item, "score": score})
             processed_ids.add(item_id)
 
-        # 2. 处理图遍历扩展出的项，给予一个较低的基础分
         traversed_nodes = {
             (n.get("id") or n.get("name")): n for n in traversal_context["nodes"]
         }
         for node_id, node_data in traversed_nodes.items():
             if node_id in processed_ids:
                 continue
-            context_items.append(
-                {"id": node_id, "data": node_data, "score": 0.5}
-            )
+            context_items.append({"id": node_id, "data": node_data, "score": 0.5})
             processed_ids.add(node_id)
 
-        # 3. 按最终得分对所有项进行降序排序
         context_items.sort(key=lambda x: x["score"], reverse=True)
 
-        # 4. 将得分最高的 K 项格式化为文本
         formatted_lines = []
         final_items_to_show = max_items
 
-        # 优先添加记忆摘要
         summaries = [
             item for item in context_items if item["data"]["_label"] == "MemoryFragment"
         ]
         if summaries:
             formatted_lines.append("相关记忆摘要:")
-            for s_item in summaries[:2]:  # 最多显示2条摘要
+            for s_item in summaries[:2]:
                 ts = datetime.fromtimestamp(s_item["data"]["timestamp"]).strftime(
                     "%Y-%m-%d"
                 )
                 formatted_lines.append(f"- [日期: {ts}]: {s_item['data']['text']}")
                 final_items_to_show -= 1
 
-        # 添加相关实体
         entities = [
             item for item in context_items if item["data"]["_label"] == "Entity"
         ]
         if entities:
             formatted_lines.append("\n相关概念:")
-            for e_item in entities[:3]:  # 最多显示3个实体
+            for e_item in entities[:3]:
                 formatted_lines.append(f"- 概念: {e_item['data']['name']}")
                 final_items_to_show -= 1
 
-        # 添加图关系（事实）
         if traversal_context["edges"]:
             formatted_lines.append("\n相关事实:")
-            for edge in traversal_context["edges"][:3]:  # 最多显示3条关系
+            for edge in traversal_context["edges"][:3]:
                 formatted_lines.append(
                     f"- 事实: ({edge['from']})-[{edge['label']}]->({edge['to']})"
                 )
                 final_items_to_show -= 1
 
-        # 如果还有空间，添加相关的历史消息
         messages = [
             item for item in context_items if item["data"]["_label"] == "Message"
         ]
@@ -516,7 +496,6 @@ class GraphEngine:
         keyword_top_k: int,
     ) -> dict:
         """[同步] 执行搜索并返回一个包含 'nodes' 和 'edges' 的字典。"""
-        # 1. 混合召回
         recalled_items = []
         entity_res = self._vector_search(
             "Entity", query_embedding, session_id, top_k=vector_top_k
@@ -554,11 +533,9 @@ class GraphEngine:
         if not recalled_items:
             return {"nodes": [], "edges": []}
 
-        # 2. 图遍历扩展
         seed_ids = {item.get("id") or item.get("name") for item in recalled_items}
         traversal_context = self._traverse_graph(list(seed_ids))
 
-        # 3. 合并并格式化所有相关节点
         all_nodes = {
             (n.get("id") or n.get("name")): n for n in traversal_context["nodes"]
         }
@@ -570,7 +547,6 @@ class GraphEngine:
                     node_data["_label"] = node_data.get("type", "Unknown")
                 all_nodes[node_id] = node_data
 
-        # 4. 格式化为 vis.js 兼容的格式
         vis_nodes = []
         nodes_seen = set()
         for node_id, node_data in all_nodes.items():
@@ -587,61 +563,104 @@ class GraphEngine:
         return {"nodes": vis_nodes, "edges": traversal_context["edges"]}
 
     # ================= 维护 (Maintenance) =================
-    async def prune_graph(self, max_nodes: int) -> int:
+    async def prune_graph(self, max_nodes: int, message_max_days: int) -> int:
         """
         [异步] 剪枝图谱，移除最旧的 Message 节点以将节点总数保持在限制内。
         """
-        return await self._run_in_executor(self._prune_graph_sync, max_nodes)
+        return await self._run_in_executor(
+            self._prune_graph_sync, max_nodes, message_max_days
+        )
 
-    def _prune_graph_sync(self, max_nodes: int) -> int:
+    def _prune_graph_sync(self, max_nodes: int, message_max_days: int) -> int:
         """[同步] 剪枝图谱的实现。"""
+        import time
+
+        total_deleted_count = 0
         try:
-            # 1. 获取当前节点总数
-            res = self.execute_query(COUNT_ALL_NODES)
-            current_nodes = res.get_next()[0] if res.has_next() else 0
+            while True:
+                res = self.execute_query(COUNT_ALL_NODES)
+                current_nodes = res.get_next()[0] if res.has_next() else 0
 
-            if current_nodes <= max_nodes:
-                logger.debug(
-                    f"[GraphMemory] 节点数 ({current_nodes}) 在限制 ({max_nodes}) 内，无需剪枝。"
+                if current_nodes <= max_nodes:
+                    if total_deleted_count > 0:
+                        logger.info(
+                            f"[GraphMemory] 剪枝完成。总共删除 {total_deleted_count} 个节点。当前节点数: {current_nodes}"
+                        )
+                    else:
+                        logger.debug(
+                            f"[GraphMemory] 节点数 ({current_nodes}) 在限制 ({max_nodes}) 内，无需剪枝。"
+                        )
+                    return total_deleted_count
+
+                logger.info(
+                    f"[GraphMemory] 需要剪枝。当前: {current_nodes}, 限制: {max_nodes}。"
                 )
-                return 0
 
-            nodes_to_delete = current_nodes - max_nodes
-            logger.info(
-                f"[GraphMemory] 需要剪枝。当前: {current_nodes}, 限制: {max_nodes}。目标删除: {nodes_to_delete} 个节点。"
-            )
+                max_days_ms = message_max_days * 24 * 3600 * 1000
+                current_ts_ms = time.time() * 1000
+                query_stage1 = """
+                    MATCH (m:Message)
+                    WHERE m.timestamp < ($current_ts_ms - $max_days_ms) AND (m.is_summarized IS NULL OR m.is_summarized = false)
+                    WITH m LIMIT 1000
+                    DETACH DELETE m
+                    RETURN count(m)
+                """
+                res_stage1 = self.execute_query(
+                    query_stage1,
+                    {"current_ts_ms": current_ts_ms, "max_days_ms": max_days_ms},
+                )
+                deleted_count = res_stage1.get_next()[0] if res_stage1.has_next() else 0
+                if deleted_count > 0:
+                    total_deleted_count += deleted_count
+                    logger.info(
+                        f"[GraphMemory Pruning - Stage 1] 删除了 {deleted_count} 个过期的原始消息。"
+                    )
+                    continue
 
-            # 2. 查找要删除的最旧的 Message 节点 ID
-            res = self.execute_query(FIND_PRUNABLE_MESSAGES, {"limit": nodes_to_delete})
-            ids_to_delete = [row[0] for row in res.get_all()]
+                query_stage2 = """
+                    MATCH (e:Entity)
+                    WHERE NOT (e)--()
+                    WITH e LIMIT 1000
+                    DETACH DELETE e
+                    RETURN count(e)
+                """
+                res_stage2 = self.execute_query(query_stage2)
+                deleted_count = res_stage2.get_next()[0] if res_stage2.has_next() else 0
+                if deleted_count > 0:
+                    total_deleted_count += deleted_count
+                    logger.info(
+                        f"[GraphMemory Pruning - Stage 2] 删除了 {deleted_count} 个孤立的实体。"
+                    )
+                    continue
 
-            if not ids_to_delete:
-                logger.info("[GraphMemory] 未找到可剪枝的消息。")
-                return 0
+                query_stage3 = """
+                    MATCH (mf:MemoryFragment)
+                    WITH mf ORDER BY mf.timestamp ASC LIMIT 500
+                    DETACH DELETE mf
+                    RETURN count(mf)
+                """
+                res_stage3 = self.execute_query(query_stage3)
+                deleted_count = res_stage3.get_next()[0] if res_stage3.has_next() else 0
+                if deleted_count > 0:
+                    total_deleted_count += deleted_count
+                    logger.info(
+                        f"[GraphMemory Pruning - Stage 3] 删除了 {deleted_count} 个最旧的记忆摘要。"
+                    )
+                    continue
 
-            # 3. 分批执行删除操作以避免单个事务过大
-            deleted_count = 0
-            batch_size = 100
-            for i in range(0, len(ids_to_delete), batch_size):
-                batch = ids_to_delete[i : i + batch_size]
-                self.execute_query(DELETE_MESSAGES_BY_ID, {"ids": batch})
-                deleted_count += len(batch)
+                logger.warning(
+                    f"[GraphMemory] 剪枝无法减少节点数，尽管当前 ({current_nodes}) 仍超过限制 ({max_nodes})。可能是图结构密集。"
+                )
+                break
 
-            logger.info(
-                f"[GraphMemory] 剪枝完成。精确删除了 {deleted_count} 个消息节点。"
-            )
-            return deleted_count
+            return total_deleted_count
         except Exception as e:
-            logger.error(
-                f"[GraphMemory] 图剪枝过程中发生错误: {e}", exc_info=True
-            )
-            return 0
+            logger.error(f"[GraphMemory] 图剪枝过程中发生错误: {e}", exc_info=True)
+            return total_deleted_count
 
     async def flush_access_stats(self):
         """(占位) 刷新访问统计信息，当前版本未实现。"""
-        logger.warning(
-            "flush_access_stats 函数在新版 GraphEngine 中尚未实现。"
-        )
+        logger.warning("flush_access_stats 函数在新版 GraphEngine 中尚未实现。")
         pass
 
     async def find_sessions_for_consolidation(self, threshold: int) -> list[str]:
@@ -655,12 +674,12 @@ class GraphEngine:
     def _find_sessions_for_consolidation_sync(self, threshold: int) -> list[str]:
         """[同步] 查找需要巩固的会话的实现。"""
         try:
-            res = self.execute_query(FIND_SESSIONS_FOR_CONSOLIDATION, {"threshold": threshold})
+            res = self.execute_query(
+                FIND_SESSIONS_FOR_CONSOLIDATION, {"threshold": threshold}
+            )
             return [row[0] for row in res.get_all()] if res.has_next() else []
         except Exception as e:
-            logger.error(
-                f"[GraphMemory] 查找需要巩固的会话失败: {e}"
-            )
+            logger.error(f"[GraphMemory] 查找需要巩固的会话失败: {e}")
             return []
 
     def get_messages_for_consolidation(
@@ -668,9 +687,6 @@ class GraphEngine:
     ) -> tuple[list[str], str, list[str]] | None:
         """
         获取一个会话中用于巩固的一批最旧的消息。
-
-        Returns:
-            一个元组 (消息ID列表, 拼接好的对话文本, 参与者ID列表)，如果无消息则返回 None。
         """
         params = {"sid": session_id, "limit": limit}
 
@@ -737,7 +753,6 @@ class GraphEngine:
         import time
         import uuid
 
-        # 1. 创建一个新的 MemoryFragment 节点来存储摘要
         fragment_id = str(uuid.uuid4())
         ts = int(time.time())
 
@@ -751,14 +766,15 @@ class GraphEngine:
             },
         )
 
-        # 2. 将新的摘要节点连接到对应的会话
-        self.execute_query(LINK_FRAGMENT_TO_SESSION, {"sid": session_id, "fid": fragment_id})
+        self.execute_query(
+            LINK_FRAGMENT_TO_SESSION, {"sid": session_id, "fid": fragment_id}
+        )
 
-        # 2.5 将摘要节点连接到相关的用户
         if user_ids:
-            self.execute_query(LINK_FRAGMENT_TO_USERS, {"fid": fragment_id, "uids": user_ids})
+            self.execute_query(
+                LINK_FRAGMENT_TO_USERS, {"fid": fragment_id, "uids": user_ids}
+            )
 
-        # 3. 将被摘要的原始消息标记为已归档
         batch_size = 100
         for i in range(0, len(message_ids), batch_size):
             batch = message_ids[i : i + batch_size]
@@ -799,22 +815,20 @@ class GraphEngine:
         self, source_session_id: str, target_session_id: str
     ) -> int:
         """[同步] 记忆迁移的实现。"""
-        # 1. 确保目标会话节点存在
         self.execute_query("MERGE (s:Session {id: $sid})", {"sid": target_session_id})
 
-        # 2. 查找源会话的所有 MemoryFragment 节点
         res = self.execute_query(MIGRATE_FIND_MEMORIES, {"sid": source_session_id})
         if not res.has_next():
             return 0
 
         memory_fragment_ids = [row[0] for row in res.get_all()]
 
-        # 3. 将这些摘要节点也关联到目标会话
         if not memory_fragment_ids:
             return 0
 
         self.execute_query(
-            MIGRATE_LINK_MEMORIES, {"sid": target_session_id, "mf_ids": memory_fragment_ids}
+            MIGRATE_LINK_MEMORIES,
+            {"sid": target_session_id, "mf_ids": memory_fragment_ids},
         )
 
         logger.info(
@@ -851,40 +865,43 @@ class GraphEngine:
                 vis_node = {
                     "id": node_id,
                     "label": node_data.get("name") or node_data.get("content", "")[:30],
-                    "group": node_data["_label"],  # _label 字段包含节点类型
+                    "group": node_data["_label"],
                     "title": "\n".join(f"{k}: {v}" for k, v in node_data.items()),
                 }
                 graph["nodes"].append(vis_node)
                 nodes_seen.add(node_id)
 
         try:
-            # 1. 获取会话中的所有消息、发送者、实体和摘要等基本节点和关系
             res = self.execute_query(GET_FULL_GRAPH_BASE, {"sid": session_id})
 
             while res.has_next():
-                s, u, m, r_mentions, e, r_has_mem, mf = res.get_next()
+                s, u, m, r_mentions, e, r_has_mem, mf, e_manual = res.get_next()
 
-                if s:
-                    add_node(s)
-                if u:
-                    add_node(u)
-                if m:
-                    add_node(m)
-                if e:
-                    add_node(e)
-                if mf:
-                    add_node(mf)
+                if s: add_node(s)
+                if u: add_node(u)
+                if m: add_node(m)
+                if e: add_node(e)
+                if mf: add_node(mf)
+                if e_manual: add_node(e_manual)
+
 
                 if u and m:
-                    graph["edges"].append({"from": u["id"], "to": m["id"], "label": "SENT"})
+                    graph["edges"].append(
+                        {"from": u["id"], "to": m["id"], "label": "SENT"}
+                    )
                 if m and s:
-                    graph["edges"].append({"from": m["id"], "to": s["id"], "label": "POSTED_IN"})
+                    graph["edges"].append(
+                        {"from": m["id"], "to": s["id"], "label": "POSTED_IN"}
+                    )
                 if m and e and r_mentions:
-                    graph["edges"].append({"from": m["id"], "to": e["name"], "label": "MENTIONS"})
+                    graph["edges"].append(
+                        {"from": m["id"], "to": e["name"], "label": "MENTIONS"}
+                    )
                 if s and mf and r_has_mem:
-                    graph["edges"].append({"from": s["id"], "to": mf["id"], "label": "HAS_MEMORY"})
+                    graph["edges"].append(
+                        {"from": s["id"], "to": mf["id"], "label": "HAS_MEMORY"}
+                    )
 
-            # 2. 单独获取实体间的 `RELATED_TO` 关系
             res_rels = self.execute_query(GET_FULL_GRAPH_RELATIONS, {"sid": session_id})
             while res_rels.has_next():
                 e1, r, e2 = res_rels.get_next()
@@ -902,6 +919,95 @@ class GraphEngine:
             )
             return None
 
+    async def get_global_graph(self) -> dict | None:
+        """[异步] 导出完整的全局知识图谱，用于 WebUI 可视化。"""
+        return await self._run_in_executor(self._get_global_graph_sync)
+
+    def _get_global_graph_sync(self) -> dict | None:
+        """[同步] 导出全局图谱的实现。"""
+        return self._get_global_graph_common(GET_GLOBAL_GRAPH_NODES, GET_GLOBAL_GRAPH_EDGES)
+
+    async def get_global_graph_optimized(self) -> dict | None:
+        """[异步] 导出优化的全局知识图谱（仅实体和记忆片段），用于 WebUI 可视化。"""
+        return await self._run_in_executor(self._get_global_graph_optimized_sync)
+
+    def _get_global_graph_optimized_sync(self) -> dict | None:
+        """[同步] 导出优化全局图谱的实现。"""
+        return self._get_global_graph_common(GET_GLOBAL_GRAPH_OPTIMIZED_NODES, GET_GLOBAL_GRAPH_OPTIMIZED_EDGES)
+
+    def _get_global_graph_common(self, nodes_query: str, edges_query: str) -> dict | None:
+        """[Helper] 全局图谱导出的通用逻辑。"""
+        graph = {"nodes": [], "edges": []}
+        nodes_seen = set()
+
+        def add_node(node_data):
+            if not node_data:
+                return None
+            
+            node_id = node_data.get("id") or node_data.get("name")
+            if not node_id:
+                return None
+                
+            if node_id in nodes_seen:
+                return node_id
+                
+            name = node_data.get("name")
+            text = node_data.get("text")
+            content = node_data.get("content")
+            
+            if name:
+                label = name
+            elif text:
+                label = text[:30] if len(text) > 30 else text
+            elif content:
+                label = content[:30] if len(content) > 30 else content
+            else:
+                label = str(node_id)[:30]
+            
+            node_type = node_data.get("_label", "Unknown")
+            
+            vis_node = {
+                "id": node_id,
+                "name": label,
+                "type": node_type,
+                "group": node_type,
+                "title": "\n".join(f"{k}: {v}" for k, v in node_data.items() if v is not None),
+                "properties": {k: v for k, v in node_data.items() if not k.startswith("_") and v is not None},
+            }
+            graph["nodes"].append(vis_node)
+            nodes_seen.add(node_id)
+            return node_id
+        
+        try:
+            res_nodes = self.execute_query(nodes_query)
+            while res_nodes.has_next():
+                node = res_nodes.get_next()[0]
+                add_node(node)
+
+            res_edges = self.execute_query(edges_query)
+            while res_edges.has_next():
+                a, r, b = res_edges.get_next()
+                if not a or not b or not r:
+                    continue
+                    
+                from_id = add_node(a)
+                to_id = add_node(b)
+                
+                if from_id and to_id:
+                    label = r.get("relation") or r.get("_label", "UNKNOWN")
+                    graph["edges"].append({
+                        "source": from_id,
+                        "target": to_id,
+                        "relation": label,
+                        "label": label
+                    })
+            
+            logger.info(f"[GraphMemory] 全局图谱导出成功: {len(graph['nodes'])} 个节点, {len(graph['edges'])} 条边")
+            return graph
+        except Exception as e:
+            logger.error(f"[GraphMemory] 导出全局图谱失败: {e}", exc_info=True)
+            return {"nodes": [], "edges": []}
+
     async def delete_node_by_id(self, node_id: str, node_type: str) -> bool:
         """[异步] 根据 ID 和类型删除一个节点及其关联的边。"""
         return await self._run_in_executor(
@@ -910,7 +1016,6 @@ class GraphEngine:
 
     def _delete_node_by_id_sync(self, node_id: str, node_type: str) -> bool:
         """[同步] 删除节点的实现。"""
-        # 根据节点类型确定主键字段名
         id_field = "name" if node_type == "Entity" else "id"
         try:
             query = DELETE_NODE_BY_ID.format(node_type=node_type, id_field=id_field)
@@ -943,7 +1048,7 @@ class GraphEngine:
                 from_id_field=from_id_field,
                 rel_type=rel_type,
                 to_type=to_type,
-                to_id_field=to_id_field
+                to_id_field=to_id_field,
             )
             self.execute_query(query, {"from_id": from_id, "to_id": to_id})
             logger.info(
@@ -959,17 +1064,20 @@ class GraphEngine:
         logger.warning("migrate_from_v1 尚未实现。")
         return True
 
-    async def update_node_properties(self, node_id: str, node_type: str, properties: dict) -> bool:
+    async def update_node_properties(
+        self, node_id: str, node_type: str, properties: dict
+    ) -> bool:
         """[异步] 更新节点的属性。"""
         return await self._run_in_executor(
             self._update_node_properties_sync, node_id, node_type, properties
         )
 
-    def _update_node_properties_sync(self, node_id: str, node_type: str, properties: dict) -> bool:
+    def _update_node_properties_sync(
+        self, node_id: str, node_type: str, properties: dict
+    ) -> bool:
         """[同步] 更新节点属性的实现。"""
         id_field = "name" if node_type == "Entity" else "id"
 
-        # 基本的安全措施：目前只允许更新特定的字段
         allowed_updates = {
             "Entity": ["summary", "type"],
             "MemoryFragment": ["text"],
@@ -993,7 +1101,7 @@ class GraphEngine:
 
         query = f"""
             MATCH (n:{node_type} {{{id_field}: $node_id}})
-            SET {', '.join(set_clauses)}
+            SET {", ".join(set_clauses)}
         """
 
         try:
@@ -1003,3 +1111,154 @@ class GraphEngine:
         except Exception as e:
             logger.error(f"更新节点 '{node_id}' 失败: {e}")
             return False
+
+    async def add_node_manually(self, node_type: str, properties: dict) -> bool:
+        """[异步] 手动创建一个新节点。"""
+        return await self._run_in_executor(
+            self._add_node_manually_sync, node_type, properties
+        )
+
+    def _add_node_manually_sync(self, node_type: str, properties: dict) -> bool:
+        """[同步] 手动创建节点的实现。"""
+        import time
+        import uuid
+
+        try:
+            if node_type == "Entity":
+                if "name" not in properties:
+                    raise ValueError("创建实体时必须提供 'name' 属性。")
+                
+                # 从 properties 中提取 session_id（如果存在），但不传给 EntityNode
+                session_id = properties.pop('session_id', None)
+                
+                entity = EntityNode(**properties)
+                params = {
+                    "name": entity.name,
+                    "type": entity.type,
+                    "summary": entity.summary,
+                    "embedding": None,
+                }
+                self.execute_query(ADD_ENTITY, params)
+                logger.info(f"[GraphMemory] 已手动创建实体: {entity.name}")
+
+                # 如果提供了 session_id，则直接将会话和实体链接
+                if session_id:
+                    self.execute_query(LINK_ENTITY_TO_SESSION, {"sid": session_id, "ename": entity.name})
+                    logger.info(f"已将新实体 '{entity.name}' 关联到会话 '{session_id}'。")
+
+            elif node_type == "MemoryFragment":
+                if "text" not in properties:
+                    raise ValueError("创建记忆片段时必须提供 'text' 属性。")
+
+                fragment_id = str(uuid.uuid4())
+                ts = int(time.time())
+                params = {
+                    "id": fragment_id,
+                    "text": properties["text"],
+                    "ts": ts,
+                    "embedding": None,
+                }
+                self.execute_query(CREATE_MEMORY_FRAGMENT, params)
+
+                if "session_id" in properties:
+                    self.execute_query(
+                        LINK_FRAGMENT_TO_SESSION,
+                        {"sid": properties["session_id"], "fid": fragment_id},
+                    )
+
+                logger.info(
+                    f"[GraphMemory] 已手动创建记忆片段: {properties['text'][:30]}..."
+                )
+            else:
+                raise ValueError(f"不支持手动创建类型为 '{node_type}' 的节点。")
+
+            return True
+        except Exception as e:
+            logger.error(f"手动创建节点失败: {e}", exc_info=True)
+            return False
+
+    async def batch_delete(self, task_name: str, **kwargs) -> int:
+        """[异步] 执行预定义的批量删除任务。"""
+        return await self._run_in_executor(self._batch_delete_sync, task_name, **kwargs)
+
+    def _batch_delete_sync(self, task_name: str, **kwargs) -> int:
+        """[同步] 批量删除的实现。"""
+        deleted_count = 0
+        if task_name == "delete_isolated_entities":
+            res = self.execute_query(BATCH_DELETE_ISOLATED_ENTITIES)
+            deleted_count = res.get_next()[0] if res.has_next() else 0
+            logger.info(f"[GraphMemory Batch] 删除了 {deleted_count} 个孤立的实体。")
+        elif task_name == "delete_old_messages":
+            import time
+
+            days = kwargs.get("days", 90)
+            params = {"days": days, "current_ts_ms": time.time() * 1000}
+            res = self.execute_query(BATCH_DELETE_OLD_MESSAGES_BY_DAYS, params)
+            deleted_count = res.get_next()[0] if res.has_next() else 0
+            logger.info(
+                f"[GraphMemory Batch] 删除了 {deleted_count} 个超过 {days} 天的原始消息。"
+            )
+        else:
+            logger.warning(f"[GraphMemory Batch] 未知的批量删除任务: {task_name}")
+
+        return deleted_count
+
+    # ================= 反思 (Reflection) =================
+
+    async def get_reflection_candidates(self, limit: int = 5) -> list[dict]:
+        """[异步] 获取用于反思的候选节点列表。"""
+        return await self._run_in_executor(self._get_reflection_candidates_sync, limit)
+
+    def _get_reflection_candidates_sync(self, limit: int) -> list[dict]:
+        """[同步] 获取反思候选节点的实现。"""
+        try:
+            res = self.execute_query(GET_REFLECTION_CANDIDATES, {"limit": limit})
+            return (
+                [dict(zip(["id", "type", "order_key"], row)) for row in res.get_all()]
+                if res.has_next()
+                else []
+            )
+        except Exception as e:
+            logger.error(f"[GraphMemory] 获取反思候选节点失败: {e}")
+            return []
+
+    async def get_node_context_package(self, node_id: str, node_type: str) -> str:
+        """[异步] 为指定节点构建一个包含其邻居信息的文本上下文包。"""
+        return await self._run_in_executor(
+            self._get_node_context_package_sync, node_id, node_type
+        )
+
+    def _get_node_context_package_sync(self, node_id: str, node_type: str) -> str:
+        """[同步] 构建上下文包的实现。"""
+        id_field = "name" if node_type == "Entity" else "id"
+        query = f"""
+            MATCH (n:{node_type} {{{id_field}: $node_id}})-[r]-(m)
+            RETURN n, r, m
+        """
+        try:
+            res = self.execute_query(query, {"node_id": node_id})
+            if not res.has_next():
+                return "节点是孤立的，没有上下文。"
+
+            package_lines = []
+            main_node_added = False
+            while res.has_next():
+                n, r, m = res.get_next()
+                if not main_node_added:
+                    package_lines.append(f"中心节点: {node_type}({node_id})")
+                    package_lines.append(f"  - 属性: {n}")
+                    main_node_added = True
+
+                relation_label = r["_label"]
+                neighbor_label = m["_label"]
+                neighbor_id = m.get("id") or m.get("name")
+
+                package_lines.append(
+                    f"关系: (中心节点)-[{relation_label}]->{neighbor_label}({neighbor_id})"
+                )
+                package_lines.append(f"  - 邻居属性: {m}")
+
+            return "\n".join(package_lines)
+        except Exception as e:
+            logger.error(f"为节点 {node_id} 构建上下文包失败: {e}")
+            return ""
