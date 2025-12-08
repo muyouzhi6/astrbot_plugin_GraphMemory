@@ -118,28 +118,54 @@ class WebServer:
             index_path = os.path.join(resources_dir, "index.html")
             return FileResponse(index_path) if os.path.exists(index_path) else HTMLResponse("<h1>WebUI 未找到。</h1>", 404)
 
+        @self.app.get("/assets/{file_path:path}")
+        async def serve_assets(file_path: str):
+            """提供 WebUI 的静态资源文件（JS、CSS等）。"""
+            asset_path = os.path.join(resources_dir, "assets", file_path)
+            if os.path.exists(asset_path):
+                # 根据文件扩展名设置正确的 MIME 类型
+                if file_path.endswith(".js"):
+                    return FileResponse(asset_path, media_type="application/javascript")
+                elif file_path.endswith(".css"):
+                    return FileResponse(asset_path, media_type="text/css")
+                else:
+                    return FileResponse(asset_path)
+            return HTMLResponse("Asset not found", 404)
+
         @self.app.get("/app.js")
         async def serve_app_js():
-            """提供 WebUI 的 JavaScript 文件 `app.js`。"""
+            """提供 WebUI 的 JavaScript 文件 `app.js`（兼容旧版）。"""
             app_js_path = os.path.join(resources_dir, "app.js")
             return FileResponse(app_js_path, media_type="application/javascript") if os.path.exists(app_js_path) else HTMLResponse("app.js not found", 404)
 
-        @self.app.get("/favicon.ico", status_code=204)
+        @self.app.get("/favicon.ico")
         async def favicon():
-            """为浏览器图标请求返回一个空响应。"""
-            return HTMLResponse(content="")
+            """提供网站图标。"""
+            favicon_path = os.path.join(resources_dir, "favicon.ico")
+            if os.path.exists(favicon_path):
+                return FileResponse(favicon_path, media_type="image/x-icon")
+            return HTMLResponse(content="", status_code=204)
 
         # --- 认证 API ---
         @self.app.post("/api/login")
         async def login(data: dict):
             """处理登录请求，验证密钥并创建会话。"""
+            logger.info(f"[GraphMemory WebUI] Login attempt. Received key: '{data.get('key')}', Expected key: '{self.auth_key}'")
             if data.get("key") == self.auth_key:
                 token = secrets.token_hex(16)
                 self.sessions.add(token)
                 response = JSONResponse(content={"status": "success", "token": token})
-                response.set_cookie(key="session_token", value=token, httponly=True)
+                # samesite="lax" 是一个更安全的默认值
+                response.set_cookie(key="session_token", value=token, httponly=True, samesite="lax")
                 return response
-            raise HTTPException(status_code=401, detail="无效的密钥")
+
+            # 登录失败时，构建一个响应来清除 cookie
+            response = JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "无效的密钥"}
+            )
+            response.delete_cookie("session_token")
+            return response
 
         # --- 图数据 API (受保护) ---
 
@@ -267,6 +293,11 @@ class WebServer:
                 logger.error(f"[GraphMemory WebUI] 创建关系失败: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=str(e))
 
+        @self.app.get("/api/session", dependencies=[Depends(self._check_auth)])
+        async def check_session():
+            """API: 检查当前会话是否有效。仅用于验证，成功则返回 200 OK。"""
+            return JSONResponse(content={"status": "ok"})
+
         # --- 监控 WebSocket API ---
         @self.app.websocket("/ws/status")
         async def websocket_endpoint(websocket: WebSocket):
@@ -334,7 +365,7 @@ class WebServer:
     def stop(self):
         """停止 FastAPI 服务器。"""
         self.stop_event.set()
-        
+
         # 优雅关闭 Uvicorn 服务器
         if self.uvicorn_server and self.server_loop:
             try:
@@ -348,7 +379,7 @@ class WebServer:
                 logger.info("[GraphMemory] WebUI 服务器已发送关闭信号")
             except Exception as e:
                 logger.error(f"[GraphMemory] 关闭 WebUI 服务器时出错: {e}")
-        
+
         # 等待线程结束
         if self.server_thread and self.server_thread.is_alive():
             self.server_thread.join(timeout=2.0)
