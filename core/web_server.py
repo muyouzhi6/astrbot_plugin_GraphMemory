@@ -81,6 +81,8 @@ class WebServer:
 
         self.server_thread = None
         self.stop_event = threading.Event()
+        self.uvicorn_server = None
+        self.server_loop = None
 
     def _generate_key(self, length=16) -> str:
         """生成一个指定长度的随机字母数字密钥。"""
@@ -289,6 +291,7 @@ class WebServer:
         # 为这个线程创建新的事件循环
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        self.server_loop = loop
 
         try:
             # 使用 uvicorn 但在新的事件循环中运行
@@ -302,12 +305,23 @@ class WebServer:
                 loop="asyncio"
             )
             server = uvicorn.Server(config)
+            self.uvicorn_server = server
 
             # 在当前线程的事件循环中运行服务器
             loop.run_until_complete(server.serve())
         except Exception as e:
             logger.error(f"[GraphMemory] WebUI 服务器运行时出错: {e}", exc_info=True)
         finally:
+            # 取消所有待处理的任务
+            try:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                # 等待所有任务取消完成
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
             loop.close()
 
     def start(self):
@@ -320,9 +334,27 @@ class WebServer:
     def stop(self):
         """停止 FastAPI 服务器。"""
         self.stop_event.set()
-        # 对于 daemon 线程，等待其结束
+        
+        # 优雅关闭 Uvicorn 服务器
+        if self.uvicorn_server and self.server_loop:
+            try:
+                # 在服务器的事件循环中调度关闭任务
+                future = asyncio.run_coroutine_threadsafe(
+                    self.uvicorn_server.shutdown(),
+                    self.server_loop
+                )
+                # 等待关闭完成，最多等待 3 秒
+                future.result(timeout=3.0)
+                logger.info("[GraphMemory] WebUI 服务器已发送关闭信号")
+            except Exception as e:
+                logger.error(f"[GraphMemory] 关闭 WebUI 服务器时出错: {e}")
+        
+        # 等待线程结束
         if self.server_thread and self.server_thread.is_alive():
             self.server_thread.join(timeout=2.0)
             if self.server_thread.is_alive():
-                logger.warning("[GraphMemory] WebUI 服务器线程未能在超时时间内停止")
-        logger.info("[GraphMemory] WebUI 服务器已停止")
+                logger.warning("[GraphMemory] WebUI 服务器线程未能在超时时间内停止（这是正常的，线程将在后台完成清理）")
+            else:
+                logger.info("[GraphMemory] WebUI 服务器已完全停止")
+        else:
+            logger.info("[GraphMemory] WebUI 服务器已停止")
