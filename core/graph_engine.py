@@ -307,17 +307,11 @@ class GraphEngine:
         params = {"vector": vector, "sid": session_id, "top_k": top_k}
 
         if table_name == "Entity":
-            query = VECTOR_SEARCH_ENTITY.format(
-                table_name=table_name, top_k_multiplied=top_k * 5
-            )
+            query = VECTOR_SEARCH_ENTITY
         elif table_name == "Message":
-            query = VECTOR_SEARCH_MESSAGE.format(
-                table_name=table_name, top_k_multiplied=top_k * 5
-            )
+            query = VECTOR_SEARCH_MESSAGE
         elif table_name == "MemoryFragment":
-            query = VECTOR_SEARCH_FRAGMENT.format(
-                table_name=table_name, top_k_multiplied=top_k * 5
-            )
+            query = VECTOR_SEARCH_FRAGMENT
         else:
             return []
 
@@ -376,7 +370,7 @@ class GraphEngine:
                 edge_info = {
                     "from": n.get("id") or n.get("name"),
                     "to": m.get("id") or m.get("name"),
-                    "label": r["_label"],
+                    "label": r.get("relation") or r["_label"],
                     "properties": {k: v for k, v in r.items() if not k.startswith("_")},
                 }
                 context["edges"].append(edge_info)

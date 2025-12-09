@@ -114,6 +114,9 @@ class KnowledgeExtractor:
 
             # 从 LLM 的响应中稳健地解析 JSON
             json_str = self._find_json_blob(raw_text)
+            if not json_str:
+                logger.error(f"[GraphMemory] 未能在 LLM 响应中找到有效的 JSON。原始文本: {raw_text}")
+                return None
             data = json.loads(json_str)
 
             # 将解析后的字典数据填充到 ExtractedData 对象中
@@ -136,7 +139,7 @@ class KnowledgeExtractor:
             logger.error(f"[GraphMemory] LLM 提取错误: {e}", exc_info=True)
             return None
 
-    def _find_json_blob(self, text: str) -> str:
+    def _find_json_blob(self, text: str) -> str | None:
         """
         从可能包含 Markdown 代码块或其他无关文本的字符串中稳健地找到 JSON 对象。
         例如，LLM 可能返回 ` ```json\n{...}\n``` `。
@@ -145,7 +148,7 @@ class KnowledgeExtractor:
         end = text.rfind("}")
         if start != -1 and end != -1:
             return text[start : end + 1]
-        return "{}"
+        return None
 
     async def rewrite_query(self, query: str, history: str, provider_id: str | None = None) -> str:
         """
