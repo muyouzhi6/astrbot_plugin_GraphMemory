@@ -94,6 +94,7 @@ def initialize_schema(conn, embedding_dim: int):
                 type STRING,
                 summary STRING,
                 embedding FLOAT[{embedding_dim}],
+                last_accessed INT64,
                 PRIMARY KEY (name)
             )
         """)

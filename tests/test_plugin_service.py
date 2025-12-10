@@ -48,12 +48,18 @@ mock_api_provider.ProviderRequest = MagicMock()
 mock_api_star.Context = MagicMock()
 mock_core_message_event_result.MessageEventResult = MagicMock()
 
-# Mock 核心组件
+# Mock 核心组件 - 不要 mock reflection_engine，因为会影响其他测试
 sys.modules["core.graph_engine"] = MagicMock()
 sys.modules["core.extractor"] = MagicMock()
 sys.modules["core.buffer_manager"] = MagicMock()
-sys.modules["core.reflection_engine"] = MagicMock()
-sys.modules["core.monitoring_service"] = MagicMock()
+
+# Mock monitoring_service 模块和单例对象
+mock_monitoring_module = MagicMock()
+mock_monitoring_service_instance = MagicMock()
+mock_monitoring_service_instance.add_task = AsyncMock()
+mock_monitoring_service_instance.add_message = AsyncMock()
+mock_monitoring_module.monitoring_service = mock_monitoring_service_instance
+sys.modules["core.monitoring_service"] = mock_monitoring_module
 
 # ==================== 3. 导入业务代码 ====================
 from core.plugin_service import PluginService  # noqa: E402

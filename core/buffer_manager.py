@@ -6,8 +6,6 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.message_components import *  # noqa
-from astrbot.core.message.message_event_result import MessageEventResult
 
 from .monitoring_service import monitoring_service
 
@@ -136,9 +134,12 @@ class BufferManager:
         self.max_size = max_size                     # 默认的最大缓冲区大小
         self.max_wait_seconds = max_wait_seconds     # 默认的最大等待时间
         self._stop_event = asyncio.Event()
+        self._timer_task = None
 
-        # 启动一个后台任务，用于定期检查超时的缓冲区
-        self._timer_task = asyncio.create_task(self._time_checker())
+    async def startup(self):
+        """启动后台任务。"""
+        if not self._timer_task:
+            self._timer_task = asyncio.create_task(self._time_checker())
 
     def _get_session_key(self, event: AstrMessageEvent) -> str:
         """
@@ -157,25 +158,32 @@ class BufferManager:
 
         parts = []
         for i in chain:
-            if isinstance(i, Plain):
-                parts.append(i.text)
-            elif isinstance(i, Image):
+            # 使用 .type 属性进行分派，这比 isinstance 或 __class__.__name__ 更健壮
+            comp_type = getattr(i, "type", "Unknown")
+
+            if comp_type == "Plain":
+                # 优先使用 .text 属性，如果不存在则尝试字符串化
+                parts.append(getattr(i, "text", str(i)))
+            elif comp_type == "Image":
                 parts.append("[图片]")
-            elif isinstance(i, Face):
-                parts.append(f"[表情:{i.id}]")
-            elif isinstance(i, At):
-                parts.append(f"[At:{i.qq}]")
-            elif isinstance(i, AtAll):
+            elif comp_type == "Face":
+                parts.append(f"[表情:{getattr(i, 'id', '')}]")
+            elif comp_type == "At":
+                parts.append(f"[At:{getattr(i, 'qq', '')}]")
+            elif comp_type == "AtAll":
                 parts.append("[At:全体成员]")
-            elif isinstance(i, Forward):
+            elif comp_type == "Forward":
                 parts.append("[转发消息]")
-            elif isinstance(i, Reply):
-                if i.message_str:
-                    parts.append(f"[引用消息({i.sender_nickname}: {i.message_str})]")
+            elif comp_type == "Reply":
+                message_str = getattr(i, "message_str", "")
+                sender_nickname = getattr(i, "sender_nickname", "")
+                if message_str:
+                    parts.append(f"[引用消息({sender_nickname}: {message_str})]")
                 else:
                     parts.append("[引用消息]")
             else:
-                parts.append(f"[{i.type}]")
+                # 兼容未知组件类型
+                parts.append(f"[{comp_type}]")
             parts.append(" ")
         return "".join(parts).strip()
 
@@ -213,7 +221,8 @@ class BufferManager:
             if not result:
                 return
 
-            if isinstance(result, MessageEventResult) and result.chain:
+            # 使用鸭子类型检查：如果有 chain 属性，就当作 MessageEventResult 处理
+            if hasattr(result, "chain") and result.chain:
                 bot_content = self._outline_chain(result.chain)
             elif isinstance(result, str):
                 bot_content = result
@@ -301,7 +310,8 @@ class BufferManager:
     async def shutdown(self):
         """关闭管理器，确保所有剩余的消息都被处理。"""
         self._stop_event.set()
-        self._timer_task.cancel()
+        if self._timer_task:
+            self._timer_task.cancel()
 
         # 在关闭时将所有缓冲区中残留的消息强制刷新
         logger.info("[GraphMemory Buffer] 正在关闭并刷新所有剩余的缓冲区...")

@@ -1,56 +1,9 @@
 import json
-import os
-import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-# ==================== 1. 修复导入路径 ====================
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-# ==================== 2. Mock astrbot ====================
-# 创建独立的 mock 模块以解决 'is not a package' 问题
-mock_astrbot = MagicMock()
-mock_api = MagicMock()
-mock_core = MagicMock()
-
-# 将顶层包注册到 sys.modules
-sys.modules["astrbot"] = mock_astrbot
-sys.modules["astrbot.api"] = mock_api
-sys.modules["astrbot.core"] = mock_core
-
-# 模拟 astrbot.api 的子模块
-mock_api_event = MagicMock()
-mock_api_provider = MagicMock()
-mock_api_star = MagicMock()
-mock_api_message_components = MagicMock()
-sys.modules["astrbot.api.event"] = mock_api_event
-sys.modules["astrbot.api.provider"] = mock_api_provider
-sys.modules["astrbot.api.star"] = mock_api_star
-sys.modules["astrbot.api.message_components"] = mock_api_message_components
-
-# 模拟 astrbot.core 的子模块
-mock_core_message = MagicMock()
-mock_core_message_event_result = MagicMock()
-sys.modules["astrbot.core.message"] = mock_core_message
-sys.modules["astrbot.core.message.message_event_result"] = (
-    mock_core_message_event_result
-)
-
-# 在 mock 模块上设置预期的属性
-mock_api.logger = MagicMock()
-mock_api_event.AstrMessageEvent = MagicMock()
-mock_api_provider.LLMResponse = MagicMock()
-mock_api_provider.ProviderRequest = MagicMock()
-mock_api_star.Context = MagicMock()
-mock_core_message_event_result.MessageEventResult = MagicMock()
-
-# ==================== 3. 导入业务代码 ====================
-from core.extractor import ExtractedData, KnowledgeExtractor  # noqa: E402
-from core.prompts import QUERY_REWRITING_PROMPT, SUMMARIZATION_PROMPT  # noqa: E402
+from core.extractor import ExtractedData, KnowledgeExtractor
+from core.prompts import QUERY_REWRITING_PROMPT, SUMMARIZATION_PROMPT
 
 # ==================== 4. 测试 Fixtures ====================
 
@@ -207,3 +160,92 @@ async def test_extract_no_provider(extractor, mock_context):
     # 验证
     assert result is None
     mock_context.llm_generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_extract_empty_text(extractor):
+    """测试：当输入文本为空或只有空白时，提取应返回 None。"""
+    result = await extractor.extract("   ", "session_id")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_extract_json_decode_error(extractor, mock_context):
+    """测试：当 LLM 响应是无效 JSON 时，提取应返回 None。"""
+    mock_llm_resp = MagicMock()
+    mock_llm_resp.completion_text = "{'key': 'value'"  # 无效 JSON
+    mock_context.llm_generate.return_value = mock_llm_resp
+
+    result = await extractor.extract("some text", "session_id")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_extract_llm_exception(extractor, mock_context):
+    """测试：当 LLM 调用抛出异常时，提取应返回 None。"""
+    mock_context.llm_generate.side_effect = Exception("LLM is down")
+    result = await extractor.extract("some text", "session_id")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_rewrite_query_no_history(extractor):
+    """测试：当没有历史记录时，查询重写应返回原始查询。"""
+    query = "它怎么样？"
+    result = await extractor.rewrite_query(query, "")
+    assert result == query
+
+
+@pytest.mark.asyncio
+async def test_rewrite_query_no_provider(extractor, mock_context):
+    """测试：当没有可用的 provider 时，查询重写应返回原始查询。"""
+    extractor.llm_provider_id = None
+    mock_context.get_current_chat_provider_id.return_value = None
+    query = "它怎么样？"
+    history = "Some history"
+    result = await extractor.rewrite_query(query, history)
+    assert result == query
+
+
+@pytest.mark.asyncio
+async def test_rewrite_query_exception(extractor, mock_context):
+    """测试：当查询重写时 LLM 抛出异常，应返回原始查询。"""
+    mock_context.llm_generate.side_effect = Exception("LLM error")
+    query = "它怎么样？"
+    history = "Some history"
+    result = await extractor.rewrite_query(query, history)
+    assert result == query
+
+
+@pytest.mark.asyncio
+async def test_summarize_no_provider(extractor, mock_context):
+    """测试：当没有可用的 provider 时，摘要应返回 None。"""
+    extractor.llm_provider_id = None
+    mock_context.get_current_chat_provider_id.return_value = None
+    result = await extractor.summarize("long text")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_summarize_exception(extractor, mock_context):
+    """测试：当摘要生成时 LLM 抛出异常，应返回 None。"""
+    mock_context.llm_generate.side_effect = Exception("LLM error")
+    result = await extractor.summarize("long text")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_summarize_empty_response(extractor, mock_context):
+    """测试：当 LLM 为摘要返回空响应时，应返回 None。"""
+    mock_llm_resp = MagicMock()
+    mock_llm_resp.completion_text = ""
+    mock_context.llm_generate.return_value = mock_llm_resp
+    result = await extractor.summarize("long text")
+    assert result is None
+
+
+def test_set_embedding_provider(extractor):
+    """测试：set_embedding_provider 方法能正确设置 provider。"""
+    mock_provider = MagicMock()
+    extractor.set_embedding_provider(mock_provider)
+    assert extractor.embedding_provider == mock_provider

@@ -228,16 +228,13 @@ GET_GLOBAL_GRAPH_EDGES = "MATCH (a)-[r]->(b) RETURN a, r, b"
 
 # 获取用于反思的候选节点：包括最近的记忆片段和连接最广的实体。
 GET_REFLECTION_CANDIDATES = """
-    // 获取最近的5个记忆片段
+    // 获取所有最近的记忆片段
     MATCH (n:MemoryFragment)
     RETURN n.id AS id, 'MemoryFragment' AS type, n.timestamp AS order_key
-    ORDER BY n.timestamp DESC
-    LIMIT 5
     UNION ALL
-    // 获取连接度最高的5个实体
+    // 获取所有有连接的实体及其连接度
     MATCH (n:Entity)
     WITH n, size((n)--()) AS degree
+    WHERE degree > 0
     RETURN n.name AS id, 'Entity' AS type, degree AS order_key
-    ORDER BY degree DESC
-    LIMIT 5
 """

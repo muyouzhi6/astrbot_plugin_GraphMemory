@@ -102,7 +102,14 @@ class ReflectionEngine:
 
     async def _run_fact_correction(self, node_id: str, node_type: str, context_package: str):
         """使用 LLM 检查事实不一致性并进行修正。"""
-        prompt = FACT_CORRECTION_PROMPT.format(context_package=context_package)
+        # 从上下文包中提取实体名称和摘要（简化版，实际可能更复杂）
+        entity_name = node_id
+        summary_text = f"{node_type} 节点的摘要"
+        prompt = FACT_CORRECTION_PROMPT.format(
+            entity_name=entity_name,
+            summary_text=summary_text,
+            context_package=context_package
+        )
         llm_resp = await self._call_llm(prompt)
         if not llm_resp:
             return

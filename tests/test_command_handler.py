@@ -1,55 +1,8 @@
 import json
-import os
-import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-# ==================== 1. 修复导入路径 ====================
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-# ==================== 2. Mock astrbot ====================
-# 创建独立的 mock 模块以解决 'is not a package' 问题
-mock_astrbot = MagicMock()
-mock_api = MagicMock()
-mock_core = MagicMock()
-
-# 将顶层包注册到 sys.modules
-sys.modules["astrbot"] = mock_astrbot
-sys.modules["astrbot.api"] = mock_api
-sys.modules["astrbot.core"] = mock_core
-
-# 模拟 astrbot.api 的子模块
-mock_api_event = MagicMock()
-mock_api_provider = MagicMock()
-mock_api_star = MagicMock()
-mock_api_message_components = MagicMock()
-sys.modules["astrbot.api.event"] = mock_api_event
-sys.modules["astrbot.api.provider"] = mock_api_provider
-sys.modules["astrbot.api.star"] = mock_api_star
-sys.modules["astrbot.api.message_components"] = mock_api_message_components
-
-# 模拟 astrbot.core 的子模块
-mock_core_message = MagicMock()
-mock_core_message_event_result = MagicMock()
-sys.modules["astrbot.core.message"] = mock_core_message
-sys.modules["astrbot.core.message.message_event_result"] = (
-    mock_core_message_event_result
-)
-
-# 在 mock 模块上设置预期的属性
-mock_api.logger = MagicMock()
-mock_api_event.AstrMessageEvent = MagicMock()
-mock_api_provider.LLMResponse = MagicMock()
-mock_api_provider.ProviderRequest = MagicMock()
-mock_api_star.Context = MagicMock()
-mock_core_message_event_result.MessageEventResult = MagicMock()
-
-# ==================== 3. 导入业务代码 ====================
-from core.command_handler import CommandHandler  # noqa: E402
+from core.command_handler import CommandHandler
 
 # ==================== 4. 测试 Fixtures ====================
 
@@ -199,3 +152,71 @@ async def test_handle_migrate_v2(handler, mock_event):
 
     # 验证
     assert "此功能已被废弃" in results[0]
+
+
+@pytest.mark.asyncio
+async def test_handle_link_session_no_target(handler, mock_event):
+    """测试：当 target_session_id 为空时，返回用法信息。"""
+    # 执行
+    results = await get_async_generator_result(
+        handler.handle_link_session(mock_event, "")
+    )
+    # 验证
+    assert "用法" in results[0]
+
+
+@pytest.mark.asyncio
+async def test_handle_link_session_exception(handler, mock_service, mock_event):
+    """测试：当 migrate_memories 抛出异常时，返回错误信息。"""
+    # 准备
+    target_session_id = "session_456"
+    error_message = "数据库连接失败"
+    mock_service.graph_engine.migrate_memories.side_effect = Exception(error_message)
+
+    # 执行
+    results = await get_async_generator_result(
+        handler.handle_link_session(mock_event, target_session_id)
+    )
+
+    # 验证
+    assert f"记忆关联过程中发生错误: {error_message}" in results[0]
+
+
+@pytest.mark.asyncio
+async def test_handle_forget_no_entity(handler, mock_event):
+    """测试：当 entity_name 为空时，返回用法信息。"""
+    # 执行
+    results = await get_async_generator_result(
+        handler.handle_forget(mock_event, entity_name="")
+    )
+    # 验证
+    assert "用法" in results[0]
+
+
+@pytest.mark.asyncio
+async def test_handle_forget_failure(handler, mock_service, mock_event):
+    """测试：当 delete_node_by_id 返回 False 时，返回错误信息。"""
+    # 准备
+    entity_name = "不存在的知识"
+    mock_service.graph_engine.delete_node_by_id.return_value = False
+
+    # 执行
+    results = await get_async_generator_result(
+        handler.handle_forget(mock_event, entity_name=entity_name)
+    )
+
+    # 验证
+    assert f"在忘记 '{entity_name}' 的过程中发生错误。" in results[0]
+
+
+@pytest.mark.asyncio
+async def test_handle_dump_failure(handler, mock_service, mock_event):
+    """测试：当 get_full_graph 返回 None 时，返回错误信息。"""
+    # 准备
+    mock_service.graph_engine.get_full_graph.return_value = None
+
+    # 执行
+    results = await get_async_generator_result(handler.handle_dump(mock_event))
+
+    # 验证
+    assert f"无法为会话 {mock_event.unified_msg_origin} 导出图数据。" in results[0]

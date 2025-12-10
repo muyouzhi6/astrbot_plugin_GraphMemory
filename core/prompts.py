@@ -113,7 +113,7 @@ FACT_CORRECTION_PROMPT = """
 ```
 请判断这个摘要是否准确？是否存在过时的信息？如果需要修正，请提供一个更新后的、更精确的摘要。
 以JSON格式返回你的分析和操作建议。JSON结构必须如下：
-`{"insight": "你的分析，例如：摘要内容已过时，用户喜好已改变。", "action": "update_summary | no_action", "new_text": "如果 action 是 update_summary，这里是新的摘要文本。"}`
+`{{"insight": "你的分析，例如：摘要内容已过时，用户喜好已改变。", "action": "update_summary | no_action", "new_text": "如果 action 是 update_summary，这里是新的摘要文本。"}}`
 """
 
 RELATION_INFERENCE_PROMPT = """
@@ -122,7 +122,7 @@ RELATION_INFERENCE_PROMPT = """
 {context_package}
 ```
 根据这些信息，这些实体之间是否存在某种新的、可推断的、有价值的关系？
-例如，如果“A认识B”且“B认识C”，你可以推断“A和C可能间接认识”。
+例如，如果"A认识B"且"B认识C"，你可以推断"A和C可能间接认识"。
 如果存在，请以JSON格式返回你的推断。JSON结构必须如下：
-`{"insight": "你的推断理由。", "action": "create_relation | no_action", "source": "源实体名称", "target": "目标实体名称", "relation_label": "推断出的关系标签"}`
+`{{"insight": "你的推断理由。", "action": "create_relation | no_action", "source": "源实体名称", "target": "目标实体名称", "relation_label": "推断出的关系标签"}}`
 """

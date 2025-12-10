@@ -100,8 +100,12 @@ class GraphEngine:
         """
         self.db_version = 2
         self.db_path = (db_path / f"kuzu_db_v{self.db_version}").resolve().as_posix()
-        self.kuzu_db = kuzu.Database(self.db_path)
-        self.conn: Any = kuzu.Connection(self.kuzu_db)
+        try:
+            self.kuzu_db = kuzu.Database(self.db_path)
+            self.conn: Any = kuzu.Connection(self.kuzu_db)
+        except Exception as e:
+            logger.error(f"初始化 KuzuDB 失败 at path {self.db_path}: {e}", exc_info=True)
+            raise
         self.embedding_provider = embedding_provider
 
         embedding_dim = get_embedding_dim_from_provider(embedding_provider)
@@ -142,9 +146,15 @@ class GraphEngine:
 
     def close(self):
         """关闭数据库连接并释放资源。"""
-        self._executor.shutdown(wait=True)
-        self.kuzu_db = None
-        logger.info("[GraphMemory] KuzuDB 资源已释放。")
+        try:
+            if self._executor:
+                self._executor.shutdown(wait=True)
+            # kuzu.Database 对象没有 close 方法，它在垃圾回收时自动处理。
+            # 将其设置为 None 有助于垃圾回收。
+            self.kuzu_db = None
+            logger.info("[GraphMemory] KuzuDB 资源已释放。")
+        except Exception as e:
+            logger.error(f"[GraphMemory] 关闭 KuzuDB 连接失败: {e}")
 
     async def _run_in_executor(self, func, *args, **kwargs):
         """
@@ -854,7 +864,15 @@ class GraphEngine:
     def _get_full_graph_sync(self, session_id: str) -> dict | None:
         """[同步] 导出完整子图的实现。"""
         try:
-            return self._get_session_graph_custom(session_id)
+            # _get_session_graph_custom 在其自己的 try/except 中返回一个 dict
+            # 所以我们直接返回它的结果。如果它失败，会记录日志并返回空 dict。
+            # 为了测试上层函数的异常处理，我们需要让异常传播上来。
+            # 但当前设计是内部消化，所以我们保持原样，但在测试中调整断言。
+            # 修正：为了保持一致性，让上层函数决定最终返回值。
+            result = self._get_session_graph_custom(session_id)
+            # 如果内部函数返回了表示失败的空 dict，这里可以决定是否转换为 None
+            # 但为了简单起见，我们直接返回。真正的异常会被下面的 except 捕获。
+            return result
         except Exception as e:
             logger.error(
                 f"[GraphMemory] 为会话 '{session_id}' 导出图失败: {e}",
@@ -889,12 +907,10 @@ class GraphEngine:
         params = {"sid": session_id}
 
         def add_node(node_data):
-            if not node_data:
+            if not node_data or not (node_data.get("id") or node_data.get("name")):
                 return None
 
             node_id = node_data.get("id") or node_data.get("name")
-            if not node_id:
-                return None
 
             if node_id in nodes_seen:
                 return node_id
@@ -968,7 +984,8 @@ class GraphEngine:
             return graph
         except Exception as e:
             logger.error(f"[GraphMemory] 导出会话图谱失败: {e}", exc_info=True)
-            return {"nodes": [], "edges": []}
+            # 向上抛出异常，让调用者处理
+            raise
 
     def _get_global_graph_common(
         self, nodes_query: str, edges_query: str, params: dict | None = None
@@ -978,12 +995,10 @@ class GraphEngine:
         nodes_seen = set()
 
         def add_node(node_data):
-            if not node_data:
+            if not node_data or not (node_data.get("id") or node_data.get("name")):
                 return None
 
             node_id = node_data.get("id") or node_data.get("name")
-            if not node_id:
-                return None
 
             if node_id in nodes_seen:
                 return node_id
@@ -1053,7 +1068,7 @@ class GraphEngine:
             return graph
         except Exception as e:
             logger.error(f"[GraphMemory] 导出全局图谱失败: {e}", exc_info=True)
-            return {"nodes": [], "edges": []}
+            return None
 
     async def delete_node_by_id(self, node_id: str, node_type: str) -> bool:
         """[异步] 根据 ID 和类型删除一个节点及其关联的边。"""
@@ -1264,14 +1279,29 @@ class GraphEngine:
     def _get_reflection_candidates_sync(self, limit: int) -> list[dict]:
         """[同步] 获取反思候选节点的实现。"""
         try:
-            res = self.execute_query(GET_REFLECTION_CANDIDATES, {"limit": limit})
-            return (
-                [dict(zip(["id", "type", "order_key"], row)) for row in res.get_all()]
-                if res.has_next()
-                else []
-            )
+            # 1. 获取所有候选者 (查询不再包含 limit)
+            res = self.execute_query(GET_REFLECTION_CANDIDATES)
+            if not res.has_next():
+                return []
+
+            all_candidates = [dict(zip(["id", "type", "order_key"], row)) for row in res.get_all()]
+
+            # 2. 在 Python 中进行排序和去重
+            # 按 order_key (degree 或 timestamp) 降序排序
+            all_candidates.sort(key=lambda x: x.get("order_key", 0), reverse=True)
+
+            # 去重，保留每个 id 第一次出现的最高分
+            unique_candidates = []
+            seen_ids = set()
+            for candidate in all_candidates:
+                if candidate["id"] not in seen_ids:
+                    unique_candidates.append(candidate)
+                    seen_ids.add(candidate["id"])
+
+            # 3. 返回最终的 top N
+            return unique_candidates[:limit]
         except Exception as e:
-            logger.error(f"[GraphMemory] 获取反思候选节点失败: {e}")
+            logger.error(f"[GraphMemory] 获取反思候选节点失败: {e}", exc_info=True)
             return []
 
     async def get_node_context_package(self, node_id: str, node_type: str) -> str:
@@ -1301,7 +1331,7 @@ class GraphEngine:
                     package_lines.append(f"  - 属性: {n}")
                     main_node_added = True
 
-                relation_label = r["_label"]
+                relation_label = r.get("relation") or r["_label"]
                 neighbor_label = m["_label"]
                 neighbor_id = m.get("id") or m.get("name")
 
