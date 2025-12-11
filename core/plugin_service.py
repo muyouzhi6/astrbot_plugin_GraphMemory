@@ -49,25 +49,41 @@ class PluginService:
         self._maintenance_task = None
 
         # --- 配置加载 ---
+        # 是否启用群聊学习，开启后机器人将从群聊消息中提取知识
         self.enable_group_learning = self.config.get("enable_group_learning", True)
+        # 知识提取使用的 LLM Provider ID，留空则使用当前会话的默认模型
         self.learning_model_id = self.config.get("learning_model_id")
+        # Embedding Provider ID，用于向量检索，是 GraphRAG 的核心组件
         self.embedding_provider_id = self.config.get("embedding_provider_id")
+        # 记忆摘要使用的 LLM Provider ID，留空则使用 learning_model_id
         self.summarization_provider_id = self.config.get("summarization_provider_id")
+        # 是否启用人格记忆隔离，开启后不同人格拥有独立的记忆空间
         self.enable_persona_isolation = self.config.get(
             "enable_persona_isolation", True
         )
+        # 人格隔离的例外列表，列表中的会话将反转隔离规则
         self.persona_isolation_exceptions = set(
             self.config.get("persona_isolation_exceptions", [])
         )
+        # 全局最大节点数限制，超过时触发图修剪
         self.max_global_nodes = self.config.get("max_global_nodes", 10000)
+        # 图修剪检查间隔（秒）
         self.prune_interval = self.config.get("prune_interval", 3600)
+        # 原始消息最大保留天数，超过此天数的消息将在修剪时被删除
         self.pruning_message_max_days = self.config.get("pruning_message_max_days", 90)
+        # 记忆巩固阈值，当会话中未摘要的消息数超过此值时触发巩固
         self.consolidation_threshold = self.config.get("consolidation_threshold", 50)
+        # 是否启用查询重写，使用 LLM 将用户问题重写为独立查询以提升检索准确性
         self.enable_query_rewriting = self.config.get("enable_query_rewriting", True)
+        # 向量搜索时每类节点（实体/消息/摘要）的召回数量
         self.recall_vector_top_k = self.config.get("recall_vector_top_k", 5)
+        # 关键词搜索召回的实体数量
         self.recall_keyword_top_k = self.config.get("recall_keyword_top_k", 3)
+        # 最终注入 Prompt 的上下文项目总数
         self.recall_max_items = self.config.get("recall_max_items", 7)
+        # 是否启用 Agentic 反思，开启后后台自动进行事实修正和关系推断
         self.enable_reflection = self.config.get("enable_reflection", False)
+        # 反思周期间隔（秒）
         self.reflection_interval = self.config.get("reflection_interval", 7200)
 
         logger.debug(f"[GraphMemory] 插件数据路径: {plugin_data_path}")
