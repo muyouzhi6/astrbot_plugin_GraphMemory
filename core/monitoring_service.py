@@ -1,5 +1,3 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/monitoring_service.py
-
 import asyncio
 import json
 from collections import deque

@@ -1,11 +1,6 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/graph_entities.py
-
 """
 此文件使用 Python 的 `dataclasses` 定义了图数据库中的核心实体（节点和关系）。
 
-这些数据类为从 LLM 提取的数据和存储在图数据库中的数据之间提供了一个清晰、
-类型化的契约。它们使得代码更易于阅读、理解和维护，因为它们明确了每个图元素
-预期的结构和字段。
 
 注意：虽然这些类在 Python 代码中用于数据传输和组织，但 KuzuDB 的 Cypher 查询
 是直接通过字符串和字典参数执行的，并不会直接实例化这些关系类（Rel）。

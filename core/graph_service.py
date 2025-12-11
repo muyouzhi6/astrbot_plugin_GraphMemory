@@ -1,9 +1,6 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/graph_service.py
-
 """
 该模块定义了 `GraphService` 类，它充当 Web UI 和 `GraphEngine` 之间的服务层。
-它将底层的、更复杂的 `GraphEngine` 调用封装成更简单、面向业务的接口，
-供 Web 服务器的路由处理函数使用。
+
 """
 
 from astrbot.api import logger

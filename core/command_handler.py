@@ -1,5 +1,3 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/command_handler.py
-
 """
 该模块定义了 `CommandHandler` 类，它负责处理所有用户指令。
 """

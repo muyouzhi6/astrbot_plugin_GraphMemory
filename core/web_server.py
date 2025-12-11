@@ -1,5 +1,3 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/web_server.py
-
 """
 该模块定义了 `WebServer` 类，它使用 FastAPI 和 Uvicorn 启动一个轻量级的 Web 服务器，
 为图记忆插件提供一个可视化的 Web 界面（WebUI）。

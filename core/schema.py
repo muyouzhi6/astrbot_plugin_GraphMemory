@@ -1,5 +1,3 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/schema.py
-
 """
 此文件定义了图数据库的模式（Schema）。
 它负责在 KuzuDB 中创建所有必要的节点表（Node Tables）和关系表（Rel Tables）。

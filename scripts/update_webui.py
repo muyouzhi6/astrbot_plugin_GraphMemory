@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-GITHUB_REPO = "lxfight/astrbot_plugin_GraphMemory"  # 修改为实际仓库
+GITHUB_REPO = "lxfight/astrbot_plugin_GraphMemory"
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 PLUGIN_DIR = Path(__file__).parent.parent
 RESOURCES_DIR = PLUGIN_DIR / "resources"
@@ -133,7 +133,6 @@ def main():
             shutil.rmtree(BACKUP_DIR)
         print("\n" + "=" * 50)
         print("🎉 WebUI 更新成功！")
-        print("请重启 AstrBot 以应用更改")
         print("=" * 50)
     else:
         sys.exit(1)

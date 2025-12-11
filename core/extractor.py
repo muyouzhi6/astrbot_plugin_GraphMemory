@@ -1,5 +1,3 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/extractor.py
-
 """
 该模块定义了 `KnowledgeExtractor` 类，负责与大语言模型（LLM）交互，
 以从非结构化文本中提取结构化信息、重写查询和生成摘要。

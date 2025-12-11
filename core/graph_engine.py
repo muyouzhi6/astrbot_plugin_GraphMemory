@@ -1,5 +1,3 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/graph_engine.py
-
 """
 该模块定义了 `GraphEngine` 类，它是与 Kuzu 图数据库交互的核心。
 它封装了所有数据库操作，包括模式初始化、数据写入、复杂查询和维护任务。

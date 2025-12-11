@@ -1,11 +1,8 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/prompts.py
-
 """
-此文件集中管理了所有用于与大语言模型（LLM）交互的提示（Prompts）。
-将提示与业务逻辑代码分离，使得修改和优化提示变得更加容易，而无需改动核心代码。
+此文件集中管理了所有用于与大语言模型交互的提示。
 """
 
-# --- 知识提取提示 (Knowledge Extraction Prompt) ---
+# --- 知识提取提示 ---
 
 EXTRACTION_PROMPT = """
 你是一个超级智能的知识图谱分析师。你的任务是分析一段对话，并从中提取结构化信息。
@@ -71,7 +68,7 @@ EXTRACTION_PROMPT = """
 ```
 """
 
-# --- 查询重写提示 (Query Rewriting Prompt) ---
+# --- 查询重写提示 ---
 
 QUERY_REWRITING_PROMPT = """
 根据最近的对话历史和用户的最新查询，将该查询重写为一个独立的、自包含的问题。
@@ -85,7 +82,7 @@ QUERY_REWRITING_PROMPT = """
 **重写后的查询:**
 """
 
-# --- 摘要生成提示 (Summarization Prompt) ---
+# --- 摘要生成提示 ---
 
 SUMMARIZATION_PROMPT = """
 你是一位专业的摘要员。请根据以下的对话记录，以第三人称的视角，创建一个简洁的摘要，总结其中关键的事件、事实和用户观点。
@@ -103,7 +100,7 @@ SUMMARIZATION_PROMPT = """
 **摘要:**
 """
 
-# --- Agentic 反思提示 (Agentic Reflection Prompts) ---
+# --- Agentic 反思提示 ---
 
 FACT_CORRECTION_PROMPT = """
 你是一个严谨的事实核查与修正专家。这里有一个关于实体 '{entity_name}' 的记忆摘要：'{summary_text}'。

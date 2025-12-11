@@ -4,8 +4,6 @@ import platform
 
 from astrbot.api import logger
 
-# 在 Windows 上，默认的 ProactorEventLoop 可能会在 uvicorn 关闭时引发 `AssertionError`。
-# 切换到 SelectorEventLoop 可以解决这个问题，因为它在处理管道关闭方面更稳定。
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 from astrbot.api.event import AstrMessageEvent, filter
@@ -35,16 +33,11 @@ class MonitoringLogHandler(logging.Handler):
         coro = monitoring_service.add_log(record.levelname, record.getMessage())
 
         if self.loop and self.loop.is_running():
-            # 如果我们能获取到正在运行的循环，就用线程安全的方式提交任务
             asyncio.run_coroutine_threadsafe(coro, self.loop)
         else:
-            # 作为后备，如果无法获取循环（例如在非异步上下文中），尝试直接运行
-            # 这在某些情况下可能不理想，但比直接崩溃要好
             try:
                 asyncio.run(coro)
             except RuntimeError:
-                # 如果已经有循环在运行但我们没获取到，这可能会失败
-                # 在这种情况下，我们无能为力，只能放弃记录这条日志
                 pass
 
 

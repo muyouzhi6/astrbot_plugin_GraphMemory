@@ -1,5 +1,3 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/plugin_service.py
-
 """
 该模块定义了 `PluginService` 类，它封装了 GraphMemory 插件的核心业务逻辑。
 """

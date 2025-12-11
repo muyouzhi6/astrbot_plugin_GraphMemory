@@ -1,8 +1,5 @@
-# data/plugins/astrbot_plugin_GraphMemory/core/reflection_engine.py
-
 """
 该模块定义了 `ReflectionEngine`，负责实现 Agentic 反思机制。
-它允许 Bot 主动回顾、分析和优化其内部知识图谱，实现从被动记录到主动学习的跨越。
 """
 
 import asyncio
