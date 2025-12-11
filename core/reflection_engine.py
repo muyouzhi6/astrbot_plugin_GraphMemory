@@ -32,9 +32,18 @@ class ReflectionEngine:
         """
         self.service = service
         self.context = service.context
-        self.graph_engine: GraphEngine = service.graph_engine
-        self.extractor: KnowledgeExtractor = service.extractor
+        # 不再保存静态引用，而是通过 service 动态获取
         self._task: asyncio.Task | None = None
+
+    @property
+    def extractor(self) -> "KnowledgeExtractor | None":
+        """动态获取 extractor 实例"""
+        return self.service.extractor
+
+    @property
+    def graph_engine(self) -> "GraphEngine | None":
+        """动态获取 graph_engine 实例"""
+        return self.service.graph_engine
 
     async def start(self, interval: int):
         """启动后台反思循环。"""
@@ -71,6 +80,11 @@ class ReflectionEngine:
         """
         if not self.service.learning_model_id:
             logger.debug("[GraphMemory] 未配置 learning_model_id，跳过反思周期。")
+            return
+
+        # 检查必要的组件是否已初始化
+        if not self.graph_engine:
+            logger.debug("[GraphMemory] graph_engine 未初始化，跳过反思周期。")
             return
 
         # 1. 获取用于反思的候选节点
@@ -126,7 +140,8 @@ class ReflectionEngine:
                     continue
 
                 logger.info(f"[Reflection] 正在修正节点 {target_node_type}:{target_node_id}，更新: {updates}")
-                await self.graph_engine.update_node_properties(target_node_id, target_node_type, updates)
+                if self.graph_engine:
+                    await self.graph_engine.update_node_properties(target_node_id, target_node_type, updates)
 
         except (json.JSONDecodeError, TypeError) as e:
             logger.error(f"解析事实修正的 LLM 响应失败: {e}\n响应: {llm_resp}")
@@ -155,7 +170,8 @@ class ReflectionEngine:
 
                 logger.info(f"[Reflection] 正在添加推断出的关系: ({src})-[{rel}]->({tgt})")
                 new_rel = RelatedToRel(src_entity=src, tgt_entity=tgt, relation=rel)
-                await self.graph_engine.add_relation(new_rel)
+                if self.graph_engine:
+                    await self.graph_engine.add_relation(new_rel)
 
         except (json.JSONDecodeError, TypeError) as e:
             logger.error(f"解析关系推断的 LLM 响应失败: {e}\n响应: {llm_resp}")

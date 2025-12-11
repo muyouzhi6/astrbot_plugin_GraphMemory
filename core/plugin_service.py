@@ -240,6 +240,7 @@ class PluginService:
                 sender=event.get_sender_name(), text=event.get_message_outline()
             )
         )
+        logger.debug(f"[GraphMemory] 捕获用户消息事件2: {event}")
         await self.buffer_manager.add_user_message(event, persona_id)
 
     async def process_bot_message(self, event: AstrMessageEvent, resp: LLMResponse):

@@ -79,9 +79,10 @@ class GraphMemory(Star):
         """在 LLM 请求前注入相关记忆。"""
         await self.service.inject_memory(event, req)
 
-    @filter.event_message_type(filter.EventMessageType.ALL)
+    @filter.event_message_type(filter.EventMessageType.ALL,property=1)
     async def on_user_message(self, event: AstrMessageEvent):
         """监听所有用户消息，并将其添加到缓冲区。"""
+        logger.debug(f"[GraphMemory] 捕获用户消息事件1: {event}")
         await self.service.process_user_message(event)
 
     @filter.on_llm_response()
