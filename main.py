@@ -69,6 +69,7 @@ class GraphMemory(Star):
         self.log_handler = MonitoringLogHandler()
         # 直接将处理器添加到 astrbot 的根 logger，以捕获所有相关日志
         logger.addHandler(self.log_handler)
+        logger.propagate = True
 
         # 启动后台服务
         asyncio.create_task(self.service.start())
@@ -79,7 +80,7 @@ class GraphMemory(Star):
         """在 LLM 请求前注入相关记忆。"""
         await self.service.inject_memory(event, req)
 
-    @filter.event_message_type(filter.EventMessageType.ALL,property=1)
+    @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_user_message(self, event: AstrMessageEvent):
         """监听所有用户消息，并将其添加到缓冲区。"""
         logger.debug(f"[GraphMemory] 捕获用户消息事件1: {event}")
@@ -126,5 +127,6 @@ class GraphMemory(Star):
 
         # 移除日志处理器
         logger.removeHandler(self.log_handler)
+        logger.propagate = False
 
         await self.service.shutdown()
