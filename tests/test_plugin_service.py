@@ -53,14 +53,6 @@ sys.modules["core.graph_engine"] = MagicMock()
 sys.modules["core.extractor"] = MagicMock()
 sys.modules["core.buffer_manager"] = MagicMock()
 
-# Mock monitoring_service 模块和单例对象
-mock_monitoring_module = MagicMock()
-mock_monitoring_service_instance = MagicMock()
-mock_monitoring_service_instance.add_task = AsyncMock()
-mock_monitoring_service_instance.add_message = AsyncMock()
-mock_monitoring_module.monitoring_service = mock_monitoring_service_instance
-sys.modules["core.monitoring_service"] = mock_monitoring_module
-
 # ==================== 3. 导入业务代码 ====================
 from core.plugin_service import PluginService  # noqa: E402
 
@@ -246,12 +238,12 @@ async def test_handle_buffer_flush(service):
 
     # 执行
     await service._handle_buffer_flush(
-        session_id, text, is_group=False, persona_id=persona_id
+        session_id, "session_name", text, is_group=False, persona_id=persona_id
     )
 
     # 验证
     service.extractor.extract.assert_called_once_with(
-        text_block=text, session_id=session_id
+        text_block=text, session_id=session_id, session_name="session_name", is_group=False
     )
     service.graph_engine.add_user.assert_called()
     service.graph_engine.add_entity.assert_called()

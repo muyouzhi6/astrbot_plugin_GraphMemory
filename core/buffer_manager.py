@@ -9,8 +9,6 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
-from .monitoring_service import monitoring_service
-
 
 @dataclass
 class BufferMessage:
@@ -99,14 +97,6 @@ class BufferManager:
                     last_activity_time REAL NOT NULL
                 )
             """)
-
-            # --- Migration Logic ---
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(buffer_sessions)")
-            columns = [row[1] for row in cursor.fetchall()]
-            if "session_name" not in columns:
-                logger.info("[GraphMemory Buffer] 检测到旧版数据库，正在为 buffer_sessions 表添加 'session_name' 列...")
-                cursor.execute("ALTER TABLE buffer_sessions ADD COLUMN session_name TEXT")
 
             conn.commit()
 
@@ -279,9 +269,6 @@ class BufferManager:
 
         log_message = f"[GraphMemory Buffer] 正在刷新会话 {session_id} ({session_name}) 的 {len(lines)} 条消息 (人格: {persona_id})"
         logger.debug(log_message)
-        asyncio.create_task(
-            monitoring_service.add_task(f"刷新会话 {session_id} 的缓冲区")
-        )
 
         # 删除已刷新的消息
         conn.execute("DELETE FROM buffer_messages WHERE session_id = ?", (session_id,))
@@ -456,22 +443,13 @@ class BufferManager:
                 logger.error(f"[GraphMemory Buffer] 定时检查循环出错: {e}")
 
     async def shutdown(self):
-        """关闭管理器，确保所有剩余的消息都被处理。"""
+        """关闭管理器，停止后台任务。缓冲区中的消息将保留在数据库中。"""
         self._stop_event.set()
         if self._timer_task:
             self._timer_task.cancel()
+            try:
+                await self._timer_task
+            except asyncio.CancelledError:
+                pass  # 任务被取消是预期的
 
-        logger.info("[GraphMemory Buffer] 正在关闭并刷新所有剩余的缓冲区...")
-
-        async with self._lock:
-            with self._get_connection() as conn:
-                rows = conn.execute("SELECT session_id FROM buffer_sessions").fetchall()
-
-                for row in rows:
-                    session_id = row["session_id"]
-                    result = self._flush_session(conn, session_id)
-                    if result:
-                        text, session_name, is_group, persona = result
-                        await self.flush_callback(
-                            session_id, session_name, text, is_group, persona
-                        )
+        logger.info("[GraphMemory Buffer] 缓冲区管理器已停止。")

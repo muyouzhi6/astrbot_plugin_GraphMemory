@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import platform
 
 from astrbot.api import logger
@@ -11,33 +10,7 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
 
 from .core.command_handler import CommandHandler
-from .core.monitoring_service import monitoring_service
 from .core.plugin_service import PluginService
-
-
-class MonitoringLogHandler(logging.Handler):
-    """一个将日志记录发送到 MonitoringService 的处理器，支持跨线程调用。"""
-
-    def __init__(self):
-        super().__init__()
-        try:
-            self.loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self.loop = None
-
-    def emit(self, record: logging.LogRecord):
-        if "WebSocket" in record.getMessage():
-            return
-
-        coro = monitoring_service.add_log(record.levelname, record.getMessage())
-
-        if self.loop and self.loop.is_running():
-            asyncio.run_coroutine_threadsafe(coro, self.loop)
-        else:
-            try:
-                asyncio.run(coro)
-            except RuntimeError:
-                pass
 
 
 @register(
@@ -65,10 +38,6 @@ class GraphMemory(Star):
         # Web 服务器将在 PluginService.start() 中启动
         self.web_server = None
 
-        # 设置监控日志处理器
-        self.log_handler = MonitoringLogHandler()
-        # 直接将处理器添加到 astrbot 的根 logger，以捕获所有相关日志
-        logger.addHandler(self.log_handler)
         logger.propagate = True
 
         # 启动后台服务
@@ -125,8 +94,6 @@ class GraphMemory(Star):
         """插件终止时调用的清理方法。"""
         logger.info("[GraphMemory] 正在终止 GraphMemory 插件...")
 
-        # 移除日志处理器
-        logger.removeHandler(self.log_handler)
         logger.propagate = False
 
         await self.service.shutdown()

@@ -154,10 +154,6 @@ mock_pydantic = MagicMock()
 mock_pydantic.BaseModel = MockBaseModel
 sys.modules["pydantic"] = mock_pydantic
 
-# Mock monitoring_service
-mock_monitoring_service = AsyncMock()
-sys.modules["core.monitoring_service"] = MagicMock()
-sys.modules["core.monitoring_service"].monitoring_service = mock_monitoring_service
 
 # ==================== 3. 导入业务代码 ====================
 from core.web_server import WebServer  # noqa: E402
@@ -625,21 +621,6 @@ async def test_favicon_not_exists(web_server):
 # ==================== 10. WebSocket 测试 ====================
 
 
-@pytest.mark.asyncio
-async def test_websocket_endpoint(web_server):
-    """测试：WebSocket端点。"""
-    route = next((func for method, path, func, _ in web_server.app.routes if path == "/ws/status" and method == "WEBSOCKET"), None)
-    assert route is not None, "WebSocket 路由未找到"
-
-    mock_websocket = MockWebSocket()
-
-    try:
-        await route(mock_websocket)
-    except MockWebSocketDisconnect:
-        pass
-
-    mock_monitoring_service.connect.assert_called_once_with(mock_websocket)
-    mock_monitoring_service.disconnect.assert_called_once_with(mock_websocket)
 
 
 # ==================== 11. 错误处理测试 ====================

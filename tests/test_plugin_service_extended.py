@@ -50,7 +50,6 @@ mock_core_message_event_result.MessageEventResult = MagicMock()
 sys.modules["core.graph_engine"] = MagicMock()
 sys.modules["core.extractor"] = MagicMock()
 sys.modules["core.buffer_manager"] = MagicMock()
-sys.modules["core.monitoring_service"] = MagicMock()
 
 # ==================== 3. 导入业务代码 ====================
 from core.plugin_service import PluginService  # noqa: E402
@@ -425,19 +424,16 @@ async def test_handle_buffer_flush_skip_group_learning_disabled(service):
 
 
 @pytest.mark.asyncio
-@patch("core.plugin_service.monitoring_service")
-async def test_handle_buffer_flush_no_extracted_data(mock_monitoring, service):
+async def test_handle_buffer_flush_no_extracted_data(service):
     """测试：提取器返回 None 时不进行图操作。"""
     # 准备
-    mock_monitoring.add_task = AsyncMock()
     service.extractor.extract.return_value = None
 
     # 执行
-    await service._handle_buffer_flush("session1", "text", is_group=False, persona_id="default")
+    await service._handle_buffer_flush("session1", "session_name", "text", is_group=False, persona_id="default")
 
     # 验证
     service.extractor.extract.assert_called_once()
-    mock_monitoring.add_task.assert_called_once()
     # 不应该调用图引擎的添加方法（因为没有数据）
 
 

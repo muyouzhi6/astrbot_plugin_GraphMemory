@@ -19,6 +19,10 @@ class CommandHandler:
 
     async def handle_stat(self, event: AstrMessageEvent):
         """处理 /memory_stat 指令"""
+        if not self.service.graph_engine:
+            yield event.plain_result("GraphEngine 尚未初始化。")
+            return
+
         stats = await self.service.graph_engine.get_graph_statistics()
         if not stats:
             yield event.plain_result("获取图谱统计信息失败。")
@@ -29,6 +33,10 @@ class CommandHandler:
 
     async def handle_link_session(self, event: AstrMessageEvent, target_session_id: str):
         """处理 /memory_link_session 指令"""
+        if not self.service.graph_engine:
+            yield event.plain_result("GraphEngine 尚未初始化。")
+            return
+
         if not target_session_id:
             yield event.plain_result("用法: /memory_link_session <目标会话ID>")
             return
@@ -51,6 +59,10 @@ class CommandHandler:
 
     async def handle_forget(self, event: AstrMessageEvent, *, entity_name: str):
         """处理 /memory_forget 指令"""
+        if not self.service.graph_engine:
+            yield event.plain_result("GraphEngine 尚未初始化。")
+            return
+
         if not entity_name:
             yield event.plain_result("用法: /memory_forget <实体名称>")
             return
@@ -63,6 +75,10 @@ class CommandHandler:
 
     async def handle_dump(self, event: AstrMessageEvent):
         """处理 /memory_dump 指令"""
+        if not self.service.graph_engine:
+            yield event.plain_result("GraphEngine 尚未初始化。")
+            return
+
         session_id = event.unified_msg_origin
         graph_data = await self.service.graph_engine.get_full_graph(session_id)
         if graph_data:

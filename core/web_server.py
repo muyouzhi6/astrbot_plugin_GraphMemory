@@ -15,8 +15,6 @@ from fastapi import (
     FastAPI,
     HTTPException,
     Request,
-    WebSocket,
-    WebSocketDisconnect,
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,7 +25,6 @@ from astrbot.api import logger
 
 from .graph_engine import GraphEngine
 from .graph_service import GraphService
-from .monitoring_service import monitoring_service
 
 
 # --- Pydantic Models for Request Bodies ---
@@ -295,21 +292,6 @@ class WebServer:
         async def check_session():
             """API: 检查当前会话是否有效。仅用于验证，成功则返回 200 OK。"""
             return JSONResponse(content={"status": "ok"})
-
-        # --- 监控 WebSocket API ---
-        @self.app.websocket("/ws/status")
-        async def websocket_endpoint(websocket: WebSocket):
-            """处理监控数据的 WebSocket 连接。"""
-            await monitoring_service.connect(websocket)
-            try:
-                while True:
-                    # 保持连接开放以接收广播
-                    # 客户端不需要发送数据，但我们需要一个循环来检测断开连接
-                    await websocket.receive_text()
-            except WebSocketDisconnect:
-                logger.info("[GraphMemory WebUI] WebSocket 客户端断开连接。")
-            finally:
-                await monitoring_service.disconnect(websocket)
 
     def _run_fastapi_server(self):
         """在单独的线程中运行 FastAPI 服务器。"""

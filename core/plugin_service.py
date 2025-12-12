@@ -15,7 +15,6 @@ from astrbot.api.star import Context
 from .buffer_manager import BufferManager
 from .extractor import KnowledgeExtractor
 from .graph_engine import JIEBA_AVAILABLE, GraphEngine
-from .monitoring_service import monitoring_service
 from .reflection_engine import ReflectionEngine
 from .web_server import WebServer
 
@@ -185,11 +184,7 @@ class PluginService:
             logger.debug("[GraphMemory] 核心组件未初始化，跳过记忆注入。")
             return
 
-        self._create_monitored_task(
-            monitoring_service.add_task(
-                f"正在为会话 {event.unified_msg_origin} 注入记忆..."
-            )
-        )
+        logger.debug(f"正在为会话 {event.unified_msg_origin} 注入记忆...")
         session_id = event.unified_msg_origin
 
         try:
@@ -234,12 +229,6 @@ class PluginService:
     async def process_user_message(self, event: AstrMessageEvent):
         """处理用户消息，将其添加到缓冲区。"""
         persona_id = await self._get_persona_id(event)
-        # 将消息发送到监控服务
-        self._create_monitored_task(
-            monitoring_service.add_message(
-                sender=event.get_sender_name(), text=event.get_message_outline()
-            )
-        )
         logger.debug(f"[GraphMemory] 捕获用户消息事件2: {event}")
         await self.buffer_manager.add_user_message(event, persona_id)
 
@@ -247,10 +236,6 @@ class PluginService:
         """处理机器人消息，将其添加到缓冲区。"""
         persona_id = await self._get_persona_id(event)
         if resp.completion_text:
-            # 将消息发送到监控服务
-            self._create_monitored_task(
-                monitoring_service.add_message(sender="Bot", text=resp.completion_text)
-            )
             await self.buffer_manager.add_bot_message(
                 event, persona_id, content=resp.completion_text
             )
@@ -268,7 +253,6 @@ class PluginService:
 
         task_description = f"正在刷新会话 {session_id} ({session_name}) (人格: {persona_id}) 的缓冲区, 文本长度: {len(text)}"
         logger.info(f"[GraphMemory] {task_description}")
-        self._create_monitored_task(monitoring_service.add_task(task_description))
         extracted_data = await self.extractor.extract(
             text_block=text, session_id=session_id, session_name=session_name, is_group=is_group
         )

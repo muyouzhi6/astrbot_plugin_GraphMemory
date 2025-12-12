@@ -24,15 +24,12 @@ import RightPanel from '@/components/RightPanel.vue'
 import ConnectModeOverlay from '@/components/ConnectModeOverlay.vue'
 import Tooltip from '@/components/Tooltip.vue'
 import { useGraphStore } from '@/stores/graph'
-import useWebSocket from '@/composables/useWebSocket'
 
 const graphStore = useGraphStore()
-const { connectWebSocket } = useWebSocket()
 
 onMounted(async () => {
   await graphStore.fetchContexts()
   await graphStore.loadGraphData()
-  connectWebSocket()
 })
 </script>
 
