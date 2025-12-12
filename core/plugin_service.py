@@ -597,27 +597,7 @@ class PluginService:
             logger.error(f"为会话 {session_id} 进行巩固时出错: {e}", exc_info=True)
 
     async def _get_persona_id(self, event: AstrMessageEvent) -> str:
-        """根据事件和配置确定当前应使用的 Persona ID。"""
-        umo = event.unified_msg_origin
-        should_isolate = self.enable_persona_isolation
-
-        if umo in self.persona_isolation_exceptions:
-            should_isolate = not should_isolate
-
-        if not should_isolate:
-            return self.DEFAULT_PERSONA_ID
-
-        try:
-            # 使用官方推荐的方式获取当前会话的默认人格
-            default_persona = await self.context.persona_manager.get_default_persona_v3(
-                umo
-            )
-            if default_persona:
-                logger.info(f"[GraphMemory] 获取人格: {default_persona.persona_id}")  # type: ignore
-                return default_persona.persona_id  # type: ignore
-        except Exception as e:
-            logger.warning(f"[GraphMemory] 获取人格时出错: {e}")
-
+        """返回默认人格ID，记忆仅按会话隔离。"""
         return self.DEFAULT_PERSONA_ID
 
     async def _get_recent_history(self, session_id: str, limit: int = 10) -> str:
