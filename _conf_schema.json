@@ -142,5 +142,17 @@
         "description": "缓冲区最大等待时间 (秒)",
         "hint": "消息在缓冲区中最长等待时间，超过后自动刷新。",
         "default": 180
+    },
+    "intermediate_memory_max_versions": {
+        "type": "int",
+        "description": "中期记忆最大版本数",
+        "hint": "保留的中期记忆历史版本数量，超出后自动淘汰最旧的版本。",
+        "default": 3
+    },
+    "intermediate_memory_inject_count": {
+        "type": "int",
+        "description": "中期记忆注入数量",
+        "hint": "LLM 请求时注入的中期记忆版本数量（1表示只注入最新版本）。",
+        "default": 1
     }
 }

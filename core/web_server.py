@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from astrbot.api import logger
 
+from .buffer_manager import BufferManager
 from .graph_engine import GraphEngine
 from .graph_service import GraphService
 
@@ -40,13 +41,14 @@ class WebServer:
     """
     管理插件的 Web 服务器，提供用于图可视化的 API 和前端资源。
     """
-    def __init__(self, engine: GraphEngine, config: dict):
+    def __init__(self, engine: GraphEngine, config: dict, buffer_manager: BufferManager | None = None):
         """
         初始化 WebServer。
 
         Args:
             engine (GraphEngine): GraphEngine 的实例，用于数据交互。
             config (dict): 插件的配置字典。
+            buffer_manager (BufferManager | None): BufferManager 的实例，用于中期记忆操作。
         """
         self.config = config
         self.host = config.get("webui_host", "0.0.0.0")
@@ -54,6 +56,7 @@ class WebServer:
         self.configured_key = config.get("webui_key", "")
 
         self.service = GraphService(engine)
+        self.buffer_manager = buffer_manager
 
         # 如果未在配置中提供密钥，则生成一个随机密钥用于认证
         self.auth_key = self.configured_key or self._generate_key()
@@ -292,6 +295,48 @@ class WebServer:
         async def check_session():
             """API: 检查当前会话是否有效。仅用于验证，成功则返回 200 OK。"""
             return JSONResponse(content={"status": "ok"})
+
+        # --- 中期记忆 API (受保护) ---
+
+        @self.app.get("/api/intermediate-memory/sessions")
+        async def get_memory_sessions(_: bool = Depends(self._check_auth)):
+            """API: 获取所有有中期记忆的会话列表。"""
+            if not self.buffer_manager:
+                raise HTTPException(status_code=503, detail="BufferManager 未初始化")
+            try:
+                sessions = self.buffer_manager.get_all_sessions_with_memory()
+                return {"sessions": sessions}
+            except Exception as e:
+                logger.error(f"[GraphMemory WebUI] 获取中期记忆会话列表失败: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/intermediate-memory/{session_id}/{persona_id}")
+        async def get_memory_versions(session_id: str, persona_id: str, limit: int = 10, _: bool = Depends(self._check_auth)):
+            """API: 获取指定会话和人格的中期记忆版本列表。"""
+            if not self.buffer_manager:
+                raise HTTPException(status_code=503, detail="BufferManager 未初始化")
+            try:
+                versions = self.buffer_manager.get_intermediate_memory_versions(
+                    session_id, persona_id, limit=limit
+                )
+                return {"versions": versions}
+            except Exception as e:
+                logger.error(f"[GraphMemory WebUI] 获取中期记忆版本失败: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.delete("/api/intermediate-memory/{session_id}/{persona_id}")
+        async def delete_memory(session_id: str, persona_id: str, version: int | None = None, _: bool = Depends(self._check_auth)):
+            """API: 删除指定会话和人格的中期记忆。version=None 时删除所有版本。"""
+            if not self.buffer_manager:
+                raise HTTPException(status_code=503, detail="BufferManager 未初始化")
+            try:
+                deleted_count = self.buffer_manager.delete_intermediate_memory(
+                    session_id, persona_id, version=version
+                )
+                return {"status": "success", "deleted_count": deleted_count}
+            except Exception as e:
+                logger.error(f"[GraphMemory WebUI] 删除中期记忆失败: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
 
     def _run_fastapi_server(self):
         """在单独的线程中运行 FastAPI 服务器。"""

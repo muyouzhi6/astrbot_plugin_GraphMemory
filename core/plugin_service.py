@@ -88,6 +88,9 @@ class PluginService:
         self.buffer_max_messages_private = self.config.get("buffer_max_messages_private", 10)
         self.buffer_max_messages_group = self.config.get("buffer_max_messages_group", 20)
         self.buffer_max_wait_seconds = self.config.get("buffer_max_wait_seconds", 60)
+        # 中期记忆配置
+        self.intermediate_memory_max_versions = self.config.get("intermediate_memory_max_versions", 3)
+        self.intermediate_memory_inject_count = self.config.get("intermediate_memory_inject_count", 1)
 
         logger.debug(f"[GraphMemory] 插件数据路径: {plugin_data_path}")
 
@@ -147,7 +150,7 @@ class PluginService:
         )
 
         # 4. 初始化并启动 WebServer
-        self.web_server = WebServer(self.graph_engine, self.config)
+        self.web_server = WebServer(self.graph_engine, self.config, self.buffer_manager)
         try:
             self.web_server.start()
             logger.info("[GraphMemory] WebUI 已启动。")
@@ -184,20 +187,24 @@ class PluginService:
         persona_id = await self._get_persona_id(event)
 
         # === 注入中期记忆（模拟为对话） ===
-        intermediate_mem = self.buffer_manager.get_intermediate_memory(session_id, persona_id)
-        if intermediate_mem and intermediate_mem.get("summary_text"):
-            summary_text = intermediate_mem["summary_text"]
-            logger.debug(
-                f"[GraphMemory] 为会话 {session_id} 注入中期记忆 (版本: {intermediate_mem['version']})..."
-            )
-            # 模拟为user/assistant对话，插入到contexts开头
-            memory_messages = [
-                {"role": "user", "content": "请回忆一下我们之前聊过什么？"},
-                {"role": "assistant", "content": f"好的，以下是之前对话的要点：\n{summary_text}"},
-            ]
-            # 插入到contexts开头
-            if hasattr(req, "contexts") and isinstance(req.contexts, list):
-                req.contexts = memory_messages + req.contexts
+        memories = self.buffer_manager.get_intermediate_memory_versions(
+            session_id, persona_id, limit=self.intermediate_memory_inject_count
+        )
+        if memories:
+            memory_messages = []
+            # 按版本号升序（旧→新）注入
+            for mem in reversed(memories):
+                if mem.get("summary_text"):
+                    memory_messages.extend([
+                        {"role": "user", "content": "请回忆一下我们之前聊过什么？"},
+                        {"role": "assistant", "content": f"好的，以下是之前对话的要点：\n{mem['summary_text']}"},
+                    ])
+            if memory_messages:
+                logger.debug(
+                    f"[GraphMemory] 为会话 {session_id} 注入 {len(memories)} 个中期记忆版本..."
+                )
+                if hasattr(req, "contexts") and isinstance(req.contexts, list):
+                    req.contexts = memory_messages + req.contexts
 
         # === 图谱检索注入（原有逻辑） ===
         if not self.graph_engine or not self.extractor or not self.embedding_provider:
@@ -284,14 +291,16 @@ class PluginService:
         existing_memory = self.buffer_manager.get_intermediate_memory(session_id, persona_id)
 
         if not existing_memory:
-            # === 首次刷新：创建中期记忆 ===
+            # === 首次刷新：创建中期记忆，保存原始对话 ===
             logger.info(f"[GraphMemory] 会话 {session_id}: 首次刷新，创建中期记忆。")
             summary = await self.extractor.summarize_to_intermediate(
                 text, provider_id=self.summarization_provider_id
             )
             if summary:
-                version = self.buffer_manager.set_intermediate_memory(
-                    session_id, persona_id, summary
+                version = self.buffer_manager.add_intermediate_memory(
+                    session_id, persona_id, summary,
+                    source_conversation=text,
+                    max_versions=self.intermediate_memory_max_versions
                 )
                 logger.info(
                     f"[GraphMemory] 会话 {session_id}: 中期记忆已创建 (版本: {version})。"
@@ -304,13 +313,15 @@ class PluginService:
                 f"[GraphMemory] 会话 {session_id}: 检测到现有中期记忆 (版本: {existing_memory['version']})，执行双任务处理。"
             )
             old_summary = existing_memory["summary_text"]
+            source_conv = existing_memory.get("source_conversation") or ""
 
-            # 任务1：从中期记忆提取知识图谱（如果graph_engine可用）
-            knowledge_task = None
-            if self.graph_engine:
-                knowledge_task = asyncio.create_task(
-                    self._extract_knowledge_from_intermediate(
-                        session_id, session_name, is_group, old_summary
+            # 任务1：从形成中期记忆的原始对话提取知识图谱（异步后台任务，fire-and-forget）
+            if self.graph_engine and source_conv:
+                self._create_monitored_task(
+                    self._extract_knowledge_from_context(
+                        session_id, session_name, is_group,
+                        intermediate_memory=old_summary,
+                        source_conversation=source_conv
                     )
                 )
 
@@ -322,8 +333,10 @@ class PluginService:
             )
 
             if new_summary:
-                version = self.buffer_manager.set_intermediate_memory(
-                    session_id, persona_id, new_summary
+                version = self.buffer_manager.add_intermediate_memory(
+                    session_id, persona_id, new_summary,
+                    source_conversation=text,
+                    max_versions=self.intermediate_memory_max_versions
                 )
                 logger.info(
                     f"[GraphMemory] 会话 {session_id}: 中期记忆已更新 (版本: {version})。"
@@ -331,29 +344,35 @@ class PluginService:
             else:
                 logger.warning(f"[GraphMemory] 会话 {session_id}: 中期记忆压缩失败。")
 
-            # 等待知识提取完成
-            if knowledge_task:
-                try:
-                    await knowledge_task
-                except Exception as e:
-                    logger.error(f"[GraphMemory] 知识提取任务异常: {e}", exc_info=True)
-
-    async def _extract_knowledge_from_intermediate(
-        self, session_id: str, session_name: str, is_group: bool, summary_text: str
+    async def _extract_knowledge_from_context(
+        self, session_id: str, session_name: str, is_group: bool,
+        intermediate_memory: str, source_conversation: str
     ):
-        """从中期记忆中提取知识图谱信息（实体和关系）。"""
+        """从中期记忆+原始对话中提取知识图谱信息（实体和关系）。
+
+        Args:
+            intermediate_memory: 当前的中期记忆摘要
+            source_conversation: 形成该中期记忆的原始对话历史
+        """
         if not self.graph_engine or not self.extractor:
             return
 
-        logger.info(f"[GraphMemory] 会话 {session_id}: 正在从中期记忆提取知识图谱...")
+        logger.info(f"[GraphMemory] 会话 {session_id}: 正在从上下文提取知识图谱...")
+
+        # 组合中期记忆和原始对话，提供更完整的上下文
+        combined_context = f"""【历史记忆摘要】
+{intermediate_memory}
+
+【原始对话记录】
+{source_conversation}"""
 
         # 使用专门处理摘要文本的方法
         extracted_knowledge = await self.extractor.extract_from_summary(
-            summary_text, provider_id=self.learning_model_id
+            combined_context, provider_id=self.learning_model_id
         )
 
         if not extracted_knowledge:
-            logger.debug(f"[GraphMemory] 会话 {session_id}: 未从中期记忆提取到结构化数据。")
+            logger.debug(f"[GraphMemory] 会话 {session_id}: 未从上下文提取到结构化数据。")
             return
 
         # 确保 session 节点存在
@@ -383,7 +402,7 @@ class PluginService:
         await asyncio.gather(*relation_tasks)
 
         logger.info(
-            f"[GraphMemory] 会话 {session_id}: 已从中期记忆提取 {len(extracted_knowledge.entities)} 个实体, "
+            f"[GraphMemory] 会话 {session_id}: 已从上下文提取 {len(extracted_knowledge.entities)} 个实体, "
             f"{len(extracted_knowledge.relations)} 条关系。"
         )
 
@@ -540,18 +559,22 @@ class PluginService:
             session_config = await sp.get_async(
                 scope="umo", scope_id=umo, key="session_service_config", default={}
             )
+            logger.debug(f"[GraphMemory] session_config for {umo}: {session_config}")
             if session_config.get("persona_id"):
                 return session_config["persona_id"]
 
             # 第二优先级：conversation 中的 persona_id
             cid = await self.context.conversation_manager.get_curr_conversation_id(umo)
+            logger.debug(f"[GraphMemory] conversation_id for {umo}: {cid}")
             if cid:
                 conv = await self.context.conversation_manager.get_conversation(umo, cid)
+                logger.debug(f"[GraphMemory] conversation.persona_id: {conv.persona_id if conv else 'no conv'}")
                 if conv and conv.persona_id:
                     return conv.persona_id
 
             # 第三优先级：默认人格
             default_persona = self.context.persona_manager.selected_default_persona_v3
+            logger.debug(f"[GraphMemory] default_persona: {default_persona}")
             if default_persona and default_persona.get("name"):
                 return default_persona["name"]
         except Exception as e:

@@ -97,17 +97,21 @@ class BufferManager:
                     last_activity_time REAL NOT NULL
                 )
             """)
-            # 中期记忆表：存储会话的压缩摘要
+            # 中期记忆表：存储会话的压缩摘要（多版本）
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS intermediate_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
                     persona_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
                     summary_text TEXT NOT NULL,
-                    version INTEGER NOT NULL DEFAULT 1,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    PRIMARY KEY (session_id, persona_id)
+                    source_conversation TEXT,
+                    created_at REAL NOT NULL
                 )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_intermediate_memory
+                ON intermediate_memory(session_id, persona_id, version DESC)
             """)
 
             conn.commit()
@@ -466,72 +470,156 @@ class BufferManager:
 
         logger.info("[GraphMemory Buffer] 缓冲区管理器已停止。")
 
-    # ============ 中期记忆 CRUD ============
+    # ============ 中期记忆 CRUD（多版本） ============
 
     def get_intermediate_memory(
-        self, session_id: str, persona_id: str
+        self, session_id: str, persona_id: str, version: int | None = None
     ) -> dict | None:
-        """获取指定会话和人格的中期记忆。"""
+        """获取指定会话和人格的中期记忆。version=None 时返回最新版本。"""
         with self._get_connection() as conn:
-            row = conn.execute(
-                """
-                SELECT summary_text, version, created_at, updated_at
-                FROM intermediate_memory
-                WHERE session_id = ? AND persona_id = ?
-                """,
-                (session_id, persona_id),
-            ).fetchone()
+            if version is None:
+                row = conn.execute(
+                    """
+                    SELECT id, version, summary_text, source_conversation, created_at
+                    FROM intermediate_memory
+                    WHERE session_id = ? AND persona_id = ?
+                    ORDER BY version DESC LIMIT 1
+                    """,
+                    (session_id, persona_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT id, version, summary_text, source_conversation, created_at
+                    FROM intermediate_memory
+                    WHERE session_id = ? AND persona_id = ? AND version = ?
+                    """,
+                    (session_id, persona_id, version),
+                ).fetchone()
+
             if row:
                 return {
+                    "id": row["id"],
                     "session_id": session_id,
                     "persona_id": persona_id,
-                    "summary_text": row["summary_text"],
                     "version": row["version"],
+                    "summary_text": row["summary_text"],
+                    "source_conversation": row["source_conversation"],
                     "created_at": row["created_at"],
-                    "updated_at": row["updated_at"],
                 }
             return None
 
-    def set_intermediate_memory(
-        self, session_id: str, persona_id: str, summary_text: str
+    def get_intermediate_memory_versions(
+        self, session_id: str, persona_id: str, limit: int = 10
+    ) -> list[dict]:
+        """获取指定会话和人格的所有中期记忆版本（按版本号降序）。"""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, version, summary_text, source_conversation, created_at
+                FROM intermediate_memory
+                WHERE session_id = ? AND persona_id = ?
+                ORDER BY version DESC
+                LIMIT ?
+                """,
+                (session_id, persona_id, limit),
+            ).fetchall()
+
+            return [
+                {
+                    "id": row["id"],
+                    "session_id": session_id,
+                    "persona_id": persona_id,
+                    "version": row["version"],
+                    "summary_text": row["summary_text"],
+                    "source_conversation": row["source_conversation"],
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+
+    def add_intermediate_memory(
+        self, session_id: str, persona_id: str, summary_text: str,
+        source_conversation: str | None = None, max_versions: int = 3
     ) -> int:
-        """创建或更新中期记忆，返回新的版本号。"""
+        """添加新版本的中期记忆，自动淘汰超出限制的旧版本。返回新版本号。"""
         now = time.time()
         with self._get_connection() as conn:
-            existing = conn.execute(
-                "SELECT version FROM intermediate_memory WHERE session_id = ? AND persona_id = ?",
+            # 获取当前最大版本号
+            row = conn.execute(
+                "SELECT MAX(version) as max_ver FROM intermediate_memory WHERE session_id = ? AND persona_id = ?",
                 (session_id, persona_id),
             ).fetchone()
+            new_version = (row["max_ver"] or 0) + 1
 
-            if existing:
-                new_version = existing["version"] + 1
-                conn.execute(
-                    """
-                    UPDATE intermediate_memory
-                    SET summary_text = ?, version = ?, updated_at = ?
+            # 插入新版本
+            conn.execute(
+                """
+                INSERT INTO intermediate_memory
+                (session_id, persona_id, version, summary_text, source_conversation, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, persona_id, new_version, summary_text, source_conversation, now),
+            )
+
+            # 淘汰超出限制的旧版本
+            conn.execute(
+                """
+                DELETE FROM intermediate_memory
+                WHERE session_id = ? AND persona_id = ?
+                AND version <= (
+                    SELECT MAX(version) - ? FROM intermediate_memory
                     WHERE session_id = ? AND persona_id = ?
-                    """,
-                    (summary_text, new_version, now, session_id, persona_id),
                 )
-            else:
-                new_version = 1
-                conn.execute(
-                    """
-                    INSERT INTO intermediate_memory
-                    (session_id, persona_id, summary_text, version, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (session_id, persona_id, summary_text, new_version, now, now),
-                )
+                """,
+                (session_id, persona_id, max_versions, session_id, persona_id),
+            )
+
             conn.commit()
             return new_version
 
-    def delete_intermediate_memory(self, session_id: str, persona_id: str) -> bool:
-        """删除指定的中期记忆。"""
+    def get_version_count(self, session_id: str, persona_id: str) -> int:
+        """获取指定会话和人格的中期记忆版本数量。"""
         with self._get_connection() as conn:
-            cursor = conn.execute(
-                "DELETE FROM intermediate_memory WHERE session_id = ? AND persona_id = ?",
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM intermediate_memory WHERE session_id = ? AND persona_id = ?",
                 (session_id, persona_id),
-            )
+            ).fetchone()
+            return row["cnt"] if row else 0
+
+    def delete_intermediate_memory(self, session_id: str, persona_id: str, version: int | None = None) -> int:
+        """删除中期记忆。version=None 时删除所有版本。返回删除的记录数。"""
+        with self._get_connection() as conn:
+            if version is None:
+                cursor = conn.execute(
+                    "DELETE FROM intermediate_memory WHERE session_id = ? AND persona_id = ?",
+                    (session_id, persona_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM intermediate_memory WHERE session_id = ? AND persona_id = ? AND version = ?",
+                    (session_id, persona_id, version),
+                )
             conn.commit()
-            return cursor.rowcount > 0
+            return cursor.rowcount
+
+    def get_all_sessions_with_memory(self) -> list[dict]:
+        """获取所有有中期记忆的会话列表（用于WebUI）。"""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id, persona_id, MAX(version) as latest_version, COUNT(*) as version_count
+                FROM intermediate_memory
+                GROUP BY session_id, persona_id
+                ORDER BY MAX(created_at) DESC
+                """,
+            ).fetchall()
+            return [
+                {
+                    "session_id": row["session_id"],
+                    "persona_id": row["persona_id"],
+                    "latest_version": row["latest_version"],
+                    "version_count": row["version_count"],
+                }
+                for row in rows
+            ]
