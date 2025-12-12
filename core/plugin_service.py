@@ -571,14 +571,17 @@ class PluginService:
                 logger.debug(f"[GraphMemory] conversation.persona_id: {conv.persona_id if conv else 'no conv'}")
                 if conv and conv.persona_id:
                     return conv.persona_id
+        except Exception as e:
+            logger.debug(f"[GraphMemory] 获取人格ID(优先级1-2)时出错: {e}")
 
-            # 第三优先级：默认人格
-            default_persona = self.context.persona_manager.selected_default_persona_v3
+        # 第三优先级：默认人格（独立 try-catch，避免被前面的异常跳过）
+        try:
+            default_persona = await self.context.persona_manager.get_default_persona_v3(umo)
             logger.debug(f"[GraphMemory] default_persona: {default_persona}")
             if default_persona and default_persona.get("name"):
                 return default_persona["name"]
         except Exception as e:
-            logger.debug(f"[GraphMemory] 获取人格ID时出错: {e}")
+            logger.debug(f"[GraphMemory] 获取默认人格时出错: {e}")
 
         return self.DEFAULT_PERSONA_ID
 
