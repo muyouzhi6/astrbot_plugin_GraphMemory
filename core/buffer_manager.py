@@ -19,12 +19,12 @@ class BufferMessage:
     这简化了后续处理，使其不依赖于原始的事件格式。
     """
 
-    sender_id: str      # 发送者ID (用户ID 或 Bot ID)
-    sender_name: str    # 发送者名称 (用户名 或 Bot名)
-    content: str        # 消息的纯文本内容
-    timestamp: float    # 消息的时间戳
-    role: str           # 角色: 'user' 或 'assistant'
-    persona_id: str     # 消息所属的人格ID
+    sender_id: str  # 发送者ID (用户ID 或 Bot ID)
+    sender_name: str  # 发送者名称 (用户名 或 Bot名)
+    content: str  # 消息的纯文本内容
+    timestamp: float  # 消息的时间戳
+    role: str  # 角色: 'user' 或 'assistant'
+    persona_id: str  # 消息所属的人格ID
     is_group: bool = False  # 是否为群聊消息
 
     def to_log_str(self) -> str:
@@ -37,8 +37,8 @@ class BufferMessage:
 
 
 # 定义回调函数类型：当缓冲区flush时，调用此异步函数处理文本块。
-# 参数: (session_id, text_content, is_group, persona_id)
-FlushCallback = Callable[[str, str, bool, str], Coroutine[Any, Any, None]]
+# 参数: (session_id, session_name, text_content, is_group, persona_id)
+FlushCallback = Callable[[str, str, str, bool, str], Coroutine[Any, Any, None]]
 
 
 class BufferManager:
@@ -93,6 +93,7 @@ class BufferManager:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS buffer_sessions (
                     session_id TEXT PRIMARY KEY,
+                    session_name TEXT,
                     is_group INTEGER NOT NULL DEFAULT 0,
                     current_persona_id TEXT,
                     last_activity_time REAL NOT NULL
@@ -115,6 +116,25 @@ class BufferManager:
     def _get_session_key(self, event: AstrMessageEvent) -> str:
         """根据事件计算会话的唯一标识符。"""
         return event.unified_msg_origin
+
+    async def _get_session_name(self, event: AstrMessageEvent) -> str:
+        """根据事件获取会话的名称（群名或用户名）。"""
+        if event.get_group_id():
+            try:
+                # 尝试异步获取群组信息
+                group = await event.get_group(event.get_group_id())
+                if group and group.group_name:
+                    return group.group_name
+            except Exception as e:
+                logger.warning(f"获取群组 {event.get_group_id()} 名称失败: {e}")
+
+        # 对于私聊或获取群名失败的情况，使用发送者名称
+        sender_name = event.get_sender_name()
+        if sender_name:
+            return sender_name
+
+        # 最终回退
+        return "Unknown Session"
 
     def _outline_chain(self, chain: list) -> str:
         """将复杂的消息链转换为带有占位符的纯文本字符串。"""
@@ -153,11 +173,12 @@ class BufferManager:
         """根据会话类型返回对应的最大消息数限制。"""
         return self.max_size_group if is_group else self.max_size_private
 
-    def _get_session_info(self, conn: sqlite3.Connection, session_id: str) -> dict | None:
+    def _get_session_info(
+        self, conn: sqlite3.Connection, session_id: str
+    ) -> dict | None:
         """获取会话信息。"""
         row = conn.execute(
-            "SELECT * FROM buffer_sessions WHERE session_id = ?",
-            (session_id,)
+            "SELECT * FROM buffer_sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
         if row:
             return dict(row)
@@ -167,51 +188,72 @@ class BufferManager:
         """获取会话中的消息数量。"""
         row = conn.execute(
             "SELECT COUNT(*) as cnt FROM buffer_messages WHERE session_id = ?",
-            (session_id,)
+            (session_id,),
         ).fetchone()
         return row["cnt"] if row else 0
 
-    def _add_message_to_db(self, conn: sqlite3.Connection, session_id: str, msg: BufferMessage):
+    def _add_message_to_db(
+        self, conn: sqlite3.Connection, session_id: str, msg: BufferMessage
+    ):
         """将消息添加到数据库。"""
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO buffer_messages
             (session_id, sender_id, sender_name, content, timestamp, role, persona_id, is_group)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            session_id,
-            msg.sender_id,
-            msg.sender_name,
-            msg.content,
-            msg.timestamp,
-            msg.role,
-            msg.persona_id,
-            1 if msg.is_group else 0
-        ))
+        """,
+            (
+                session_id,
+                msg.sender_id,
+                msg.sender_name,
+                msg.content,
+                msg.timestamp,
+                msg.role,
+                msg.persona_id,
+                1 if msg.is_group else 0,
+            ),
+        )
 
-    def _update_session_info(self, conn: sqlite3.Connection, session_id: str, is_group: bool, persona_id: str):
+    def _update_session_info(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        session_name: str,
+        is_group: bool,
+        persona_id: str,
+    ):
         """更新或创建会话信息。"""
-        conn.execute("""
-            INSERT INTO buffer_sessions (session_id, is_group, current_persona_id, last_activity_time)
-            VALUES (?, ?, ?, ?)
+        conn.execute(
+            """
+            INSERT INTO buffer_sessions (session_id, session_name, is_group, current_persona_id, last_activity_time)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
+                session_name = excluded.session_name,
                 is_group = excluded.is_group,
                 current_persona_id = excluded.current_persona_id,
                 last_activity_time = excluded.last_activity_time
-        """, (session_id, 1 if is_group else 0, persona_id, time.time()))
+        """,
+            (session_id, session_name, 1 if is_group else 0, persona_id, time.time()),
+        )
 
-    def _flush_session(self, conn: sqlite3.Connection, session_id: str) -> tuple[str, bool, str] | None:
+    def _flush_session(
+        self, conn: sqlite3.Connection, session_id: str
+    ) -> tuple[str, str, bool, str] | None:
         """
-        刷新会话缓冲区，返回 (文本块, is_group, persona_id) 或 None。
+        刷新会话缓冲区，返回 (文本块, session_name, is_group, persona_id) 或 None。
         """
         session_info = self._get_session_info(conn, session_id)
         if not session_info:
             return None
 
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT * FROM buffer_messages
             WHERE session_id = ?
             ORDER BY timestamp ASC
-        """, (session_id,)).fetchall()
+        """,
+            (session_id,),
+        ).fetchall()
 
         if not rows:
             return None
@@ -222,27 +264,33 @@ class BufferManager:
             lines.append(f"{prefix}: {row['content']}")
 
         text_block = "\n".join(lines)
+        session_name = session_info["session_name"] or ""
         is_group = bool(session_info["is_group"])
         persona_id = session_info["current_persona_id"] or "default"
 
-        log_message = f"[GraphMemory Buffer] 正在刷新会话 {session_id} 的 {len(lines)} 条消息 (人格: {persona_id})"
+        log_message = f"[GraphMemory Buffer] 正在刷新会话 {session_id} ({session_name}) 的 {len(lines)} 条消息 (人格: {persona_id})"
         logger.debug(log_message)
-        asyncio.create_task(monitoring_service.add_task(f"刷新会话 {session_id} 的缓冲区"))
+        asyncio.create_task(
+            monitoring_service.add_task(f"刷新会话 {session_id} 的缓冲区")
+        )
 
         # 删除已刷新的消息
         conn.execute("DELETE FROM buffer_messages WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM buffer_sessions WHERE session_id = ?", (session_id,))
         conn.commit()
 
-        return text_block, is_group, persona_id
+        return text_block, session_name, is_group, persona_id
 
     async def add_user_message(self, event: AstrMessageEvent, persona_id: str):
         """处理来自用户的消息，并将其添加到相应的缓冲区。"""
         session_id = self._get_session_key(event)
         is_group = bool(event.get_group_id())
         content = event.get_message_outline()
+        session_name = await self._get_session_name(event)
 
-        logger.debug(f"[GraphMemory DEBUG] 向缓冲区添加用户消息: {content[:50]}... (会话: {session_id}, 人格: {persona_id})")
+        logger.debug(
+            f"[GraphMemory DEBUG] 向缓冲区添加用户消息: {content[:50]}... (会话: {session_id}, 名称: {session_name}, 人格: {persona_id})"
+        )
 
         msg = BufferMessage(
             sender_id=event.get_sender_id(),
@@ -251,13 +299,16 @@ class BufferManager:
             timestamp=time.time(),
             role="user",
             persona_id=persona_id,
-            is_group=is_group
+            is_group=is_group,
         )
-        await self._push_to_buffer(session_id, msg)
+        await self._push_to_buffer(session_id, session_name, msg)
 
-    async def add_bot_message(self, event: AstrMessageEvent, persona_id: str, content: str | None = None):
+    async def add_bot_message(
+        self, event: AstrMessageEvent, persona_id: str, content: str | None = None
+    ):
         """处理来自机器人的消息，并将其添加到相应的缓冲区。"""
         session_id = self._get_session_key(event)
+        session_name = await self._get_session_name(event)
 
         bot_content = ""
         if content:
@@ -277,7 +328,9 @@ class BufferManager:
         if not bot_content:
             return
 
-        logger.debug(f"[GraphMemory DEBUG] 向缓冲区添加机器人消息: {bot_content[:50]}... (会话: {session_id}, 人格: {persona_id})")
+        logger.debug(
+            f"[GraphMemory DEBUG] 向缓冲区添加机器人消息: {bot_content[:50]}... (会话: {session_id}, 名称: {session_name}, 人格: {persona_id})"
+        )
 
         msg = BufferMessage(
             sender_id=event.message_obj.self_id,
@@ -286,11 +339,13 @@ class BufferManager:
             timestamp=time.time(),
             role="assistant",
             persona_id=persona_id,
-            is_group=bool(event.get_group_id())
+            is_group=bool(event.get_group_id()),
         )
-        await self._push_to_buffer(session_id, msg)
+        await self._push_to_buffer(session_id, session_name, msg)
 
-    async def _push_to_buffer(self, session_id: str, msg: BufferMessage):
+    async def _push_to_buffer(
+        self, session_id: str, session_name: str, msg: BufferMessage
+    ):
         """内部方法：将消息推入缓冲区，并处理上下文切换和缓冲区溢出。"""
         async with self._lock:
             with self._get_connection() as conn:
@@ -307,9 +362,17 @@ class BufferManager:
                         )
                         result = self._flush_session(conn, session_id)
                         if result:
-                            text, is_group, persona = result
+                            text, session_name_flushed, is_group, persona = result
                             # 在同步锁中，使用 create_task 避免阻塞
-                            asyncio.create_task(self.flush_callback(session_id, text, is_group, persona))
+                            asyncio.create_task(
+                                self.flush_callback(
+                                    session_id,
+                                    session_name_flushed,
+                                    text,
+                                    is_group,
+                                    persona,
+                                )
+                            )
                         current_count = 0
 
                 # 检查是否达到大小限制 (在添加新消息之前)
@@ -320,15 +383,25 @@ class BufferManager:
                     )
                     result = self._flush_session(conn, session_id)
                     if result:
-                        text, is_group, persona = result
+                        text, session_name_flushed, is_group, persona = result
                         # 在同步锁中，使用 create_task 避免阻塞
-                        asyncio.create_task(self.flush_callback(session_id, text, is_group, persona))
+                        asyncio.create_task(
+                            self.flush_callback(
+                                session_id,
+                                session_name_flushed,
+                                text,
+                                is_group,
+                                persona,
+                            )
+                        )
                     # 重置计数器
                     current_count = 0
 
                 # 添加新消息到数据库
                 self._add_message_to_db(conn, session_id, msg)
-                self._update_session_info(conn, session_id, msg.is_group, msg.persona_id)
+                self._update_session_info(
+                    conn, session_id, session_name, msg.is_group, msg.persona_id
+                )
                 conn.commit()
 
     async def _time_checker(self):
@@ -343,10 +416,13 @@ class BufferManager:
                         threshold = now - self.max_wait_seconds
 
                         # 查找超时的会话
-                        rows = conn.execute("""
+                        rows = conn.execute(
+                            """
                             SELECT session_id FROM buffer_sessions
                             WHERE last_activity_time < ?
-                        """, (threshold,)).fetchall()
+                        """,
+                            (threshold,),
+                        ).fetchall()
 
                         for row in rows:
                             session_id = row["session_id"]
@@ -357,9 +433,15 @@ class BufferManager:
                                 )
                                 result = self._flush_session(conn, session_id)
                                 if result:
-                                    text, is_group, persona = result
+                                    text, session_name, is_group, persona = result
                                     asyncio.create_task(
-                                        self.flush_callback(session_id, text, is_group, persona)
+                                        self.flush_callback(
+                                            session_id,
+                                            session_name,
+                                            text,
+                                            is_group,
+                                            persona,
+                                        )
                                     )
             except Exception as e:
                 logger.error(f"[GraphMemory Buffer] 定时检查循环出错: {e}")
@@ -380,5 +462,7 @@ class BufferManager:
                     session_id = row["session_id"]
                     result = self._flush_session(conn, session_id)
                     if result:
-                        text, is_group, persona = result
-                        await self.flush_callback(session_id, text, is_group, persona)
+                        text, session_name, is_group, persona = result
+                        await self.flush_callback(
+                            session_id, session_name, text, is_group, persona
+                        )

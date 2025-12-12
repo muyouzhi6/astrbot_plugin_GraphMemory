@@ -65,23 +65,33 @@ class KnowledgeExtractor:
         self.embedding_provider = embedding_provider
 
     async def extract(
-        self, text_block: str, session_id: str
+        self, text_block: str, session_id: str, session_name: str, is_group: bool
     ) -> ExtractedData | None:
         """
         从给定的文本块中提取结构化知识。
 
         此方法调用 LLM，使用 `EXTRACTION_PROMPT` 指导模型从对话日志中识别
         用户、消息、实体和它们之间的关系，并以 JSON 格式返回。
+        会话信息直接从传入的参数构建，不依赖 LLM。
 
         Args:
             text_block (str): 从缓冲区刷新的对话文本块。
             session_id (str): 当前的会话 ID。
+            session_name (str): 当前的会话名称。
+            is_group (bool): 是否为群聊。
 
         Returns:
             ExtractedData | None: 如果成功，返回包含提取数据的对象；否则返回 None。
         """
         if not text_block.strip():
             return None
+
+        # 直接根据传入的精确元数据构建 SessionNode
+        session_node = SessionNode(
+            id=session_id,
+            name=session_name,
+            type="GROUP" if is_group else "PRIVATE"
+        )
 
         start_time = time.time()
 
@@ -120,7 +130,7 @@ class KnowledgeExtractor:
             # 将解析后的字典数据填充到 ExtractedData 对象中
             extracted_data = ExtractedData(
                 users=[UserNode(**u) for u in data.get("users", [])],
-                sessions=[SessionNode(**s) for s in data.get("sessions", [])],
+                sessions=[session_node],  # 使用我们直接创建的、准确的会话节点
                 messages=[MessageNode(**m) for m in data.get("messages", [])],
                 entities=[EntityNode(**e) for e in data.get("entities", [])],
                 relations=[RelatedToRel(**r) for r in data.get("relations", [])],

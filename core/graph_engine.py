@@ -189,7 +189,7 @@ class GraphEngine:
     async def add_entity(self, entity: EntityNode):
         """异步添加一个实体节点，如果需要，会先生成 embedding。"""
         if entity.embedding is None and self.embedding_provider:
-            entity.embedding = await self.embedding_provider.embed(entity.name)
+            entity.embedding = await self.embedding_provider.get_embedding(entity.name)
         params = {
             "name": entity.name,
             "type": entity.type,
@@ -201,7 +201,7 @@ class GraphEngine:
     async def add_message(self, message: MessageNode):
         """异步添加一个消息节点，并将其连接到用户和会话。如果需要，会先生成 embedding。"""
         if message.embedding is None and self.embedding_provider:
-            message.embedding = await self.embedding_provider.embed(message.content)
+            message.embedding = await self.embedding_provider.get_embedding(message.content)
         params = {
             "user_id": message.sender_id,
             "session_id": message.session_id,
@@ -741,7 +741,7 @@ class GraphEngine:
             return
 
         try:
-            summary_embedding = await self.embedding_provider.embed(summary_text)
+            summary_embedding = await self.embedding_provider.get_embedding(summary_text)
             await self._run_in_executor(
                 self._consolidate_memory_sync,
                 session_id,

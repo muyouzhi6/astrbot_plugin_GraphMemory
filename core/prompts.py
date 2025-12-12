@@ -15,7 +15,7 @@ EXTRACTION_PROMPT = """
 **指令:**
 1.  **识别核心实体**: 提取提到的关键人物、地点、概念或事件。对它们进行归一化处理（例如："JS" -> "JavaScript"）。
 2.  **提取关系**: 寻找实体之间明确的关系（例如："用户A喜欢Python"，"公司X开发了产品Y"）。
-3.  **识别说话者和上下文**: 对于每一条信息，识别出说话者（`UserNode`）和对话上下文（`SessionNode`）。
+3.  **识别说话者**: 对于每一条信息，识别出说话者（`UserNode`）。
 4.  **输出JSON**: 将所有提取的信息格式化为一个单一的JSON对象，其结构如下。不要输出任何其他内容。如果没有发现有价值的信息，返回一个空的JSON对象 {{}}。
 
 **输出JSON结构:**
@@ -26,13 +26,6 @@ EXTRACTION_PROMPT = """
       "id": "platform_user_id",
       "name": "nickname",
       "platform": "e.g., qq"
-    }}
-  ],
-  "sessions": [
-    {{
-      "id": "platform_group_or_private_id",
-      "type": "GROUP or PRIVATE",
-      "name": "group_name"
     }}
   ],
   "messages": [

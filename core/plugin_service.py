@@ -208,7 +208,7 @@ class PluginService:
             if not query_to_embed:
                 return
 
-            query_embedding = await self.embedding_provider.embed(query_to_embed)
+            query_embedding = await self.embedding_provider.get_embedding(query_to_embed)
             memory_text = await self.graph_engine.search(
                 query=query_to_embed,
                 query_embedding=query_embedding,
@@ -256,7 +256,7 @@ class PluginService:
             )
 
     async def _handle_buffer_flush(
-        self, session_id: str, text: str, is_group: bool, persona_id: str
+        self, session_id: str, session_name: str, text: str, is_group: bool, persona_id: str
     ):
         """处理缓冲区刷新事件，提取知识并存入图数据库。"""
         if is_group and not self.enable_group_learning:
@@ -266,11 +266,11 @@ class PluginService:
             logger.warning("[GraphMemory] 核心组件未初始化，无法处理缓冲区刷新。")
             return
 
-        task_description = f"正在刷新会话 {session_id} (人格: {persona_id}) 的缓冲区, 文本长度: {len(text)}"
+        task_description = f"正在刷新会话 {session_id} ({session_name}) (人格: {persona_id}) 的缓冲区, 文本长度: {len(text)}"
         logger.info(f"[GraphMemory] {task_description}")
         self._create_monitored_task(monitoring_service.add_task(task_description))
         extracted_data = await self.extractor.extract(
-            text_block=text, session_id=session_id
+            text_block=text, session_id=session_id, session_name=session_name, is_group=is_group
         )
         if not extracted_data:
             logger.debug("[GraphMemory] 未从缓冲区提取到结构化数据。")

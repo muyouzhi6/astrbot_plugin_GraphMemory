@@ -154,11 +154,13 @@ GET_SESSION_GRAPH_NODES_PART1 = """
 
 GET_SESSION_GRAPH_NODES_PART2 = """
     MATCH (s:Session {id: $sid})--(n)
+    WHERE (NOT "Message" IN labels(n) OR (n.is_summarized IS NULL OR n.is_summarized = false))
     RETURN n AS node
 """
 
 GET_SESSION_GRAPH_NODES_PART3 = """
-    MATCH (s:Session {id: $sid})<-[:POSTED_IN]-(:Message)-[:MENTIONS]->(e:Entity)
+    MATCH (s:Session {id: $sid})<-[:POSTED_IN]-(m:Message)-[:MENTIONS]->(e:Entity)
+    WHERE m.is_summarized IS NULL OR m.is_summarized = false
     RETURN e AS node
 """
 
@@ -170,11 +172,13 @@ GET_SESSION_GRAPH_EDGES_PART1 = """
 
 GET_SESSION_GRAPH_EDGES_PART2 = """
     MATCH (s:Session {id: $sid})<-[:POSTED_IN]-(m:Message)-[r:MENTIONS]->(e:Entity)
+    WHERE m.is_summarized IS NULL OR m.is_summarized = false
     RETURN m AS a, r, e AS b
 """
 
 GET_SESSION_GRAPH_EDGES_PART3 = """
-    MATCH (s:Session {id: $sid})<-[:POSTED_IN]-(:Message)-[:MENTIONS]->(e1:Entity)-[r:RELATED_TO]->(e2:Entity)
+    MATCH (s:Session {id: $sid})<-[:POSTED_IN]-(m:Message)-[:MENTIONS]->(e1:Entity)-[r:RELATED_TO]->(e2:Entity)
+    WHERE m.is_summarized IS NULL OR m.is_summarized = false
     RETURN e1 AS a, r, e2 AS b
 """
 
