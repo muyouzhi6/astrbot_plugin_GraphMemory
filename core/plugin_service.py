@@ -535,15 +535,27 @@ class PluginService:
             return self.DEFAULT_PERSONA_ID
 
         try:
+            # 第一优先级：用户手动选择的人格（session_service_config）
+            from astrbot.api import sp
+            session_config = await sp.get_async(
+                scope="umo", scope_id=umo, key="session_service_config", default={}
+            )
+            if session_config.get("persona_id"):
+                return session_config["persona_id"]
+
+            # 第二优先级：conversation 中的 persona_id
             cid = await self.context.conversation_manager.get_curr_conversation_id(umo)
             if cid:
-                conv = await self.context.conversation_manager.get_conversation(
-                    umo, cid
-                )
+                conv = await self.context.conversation_manager.get_conversation(umo, cid)
                 if conv and conv.persona_id:
                     return conv.persona_id
-        except Exception:
-            pass
+
+            # 第三优先级：默认人格
+            default_persona = self.context.persona_manager.selected_default_persona_v3
+            if default_persona and default_persona.get("name"):
+                return default_persona["name"]
+        except Exception as e:
+            logger.debug(f"[GraphMemory] 获取人格ID时出错: {e}")
 
         return self.DEFAULT_PERSONA_ID
 
