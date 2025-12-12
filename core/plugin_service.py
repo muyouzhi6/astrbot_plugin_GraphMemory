@@ -554,34 +554,13 @@ class PluginService:
             return self.DEFAULT_PERSONA_ID
 
         try:
-            # 第一优先级：用户手动选择的人格（session_service_config）
-            from astrbot.api import sp
-            session_config = await sp.get_async(
-                scope="umo", scope_id=umo, key="session_service_config", default={}
-            )
-            logger.debug(f"[GraphMemory] session_config for {umo}: {session_config}")
-            if session_config.get("persona_id"):
-                return session_config["persona_id"]
-
-            # 第二优先级：conversation 中的 persona_id
-            cid = await self.context.conversation_manager.get_curr_conversation_id(umo)
-            logger.debug(f"[GraphMemory] conversation_id for {umo}: {cid}")
-            if cid:
-                conv = await self.context.conversation_manager.get_conversation(umo, cid)
-                logger.debug(f"[GraphMemory] conversation.persona_id: {conv.persona_id if conv else 'no conv'}")
-                if conv and conv.persona_id:
-                    return conv.persona_id
-        except Exception as e:
-            logger.debug(f"[GraphMemory] 获取人格ID(优先级1-2)时出错: {e}")
-
-        # 第三优先级：默认人格（独立 try-catch，避免被前面的异常跳过）
-        try:
+            # 使用官方推荐的方式获取当前会话的默认人格
             default_persona = await self.context.persona_manager.get_default_persona_v3(umo)
-            logger.debug(f"[GraphMemory] default_persona: {default_persona}")
             if default_persona and default_persona.get("name"):
+                logger.info(f"[GraphMemory] 获取人格: {default_persona['name']}")
                 return default_persona["name"]
         except Exception as e:
-            logger.debug(f"[GraphMemory] 获取默认人格时出错: {e}")
+            logger.warning(f"[GraphMemory] 获取人格时出错: {e}")
 
         return self.DEFAULT_PERSONA_ID
 
