@@ -179,13 +179,32 @@ class PluginService:
             self.graph_engine.close()
 
     async def inject_memory(self, event: AstrMessageEvent, req: ProviderRequest):
-        """在 LLM 请求前注入相关记忆。"""
+        """在 LLM 请求前注入相关记忆（包括中期记忆和图谱检索结果）。"""
+        session_id = event.unified_msg_origin
+        persona_id = await self._get_persona_id(event)
+
+        # === 注入中期记忆（模拟为对话） ===
+        intermediate_mem = self.buffer_manager.get_intermediate_memory(session_id, persona_id)
+        if intermediate_mem and intermediate_mem.get("summary_text"):
+            summary_text = intermediate_mem["summary_text"]
+            logger.debug(
+                f"[GraphMemory] 为会话 {session_id} 注入中期记忆 (版本: {intermediate_mem['version']})..."
+            )
+            # 模拟为user/assistant对话，插入到contexts开头
+            memory_messages = [
+                {"role": "user", "content": "请回忆一下我们之前聊过什么？"},
+                {"role": "assistant", "content": f"好的，以下是之前对话的要点：\n{summary_text}"},
+            ]
+            # 插入到contexts开头
+            if hasattr(req, "contexts") and isinstance(req.contexts, list):
+                req.contexts = memory_messages + req.contexts
+
+        # === 图谱检索注入（原有逻辑） ===
         if not self.graph_engine or not self.extractor or not self.embedding_provider:
-            logger.debug("[GraphMemory] 核心组件未初始化，跳过记忆注入。")
+            logger.debug("[GraphMemory] 核心组件未初始化，跳过图谱记忆注入。")
             return
 
-        logger.debug(f"正在为会话 {event.unified_msg_origin} 注入记忆...")
-        session_id = event.unified_msg_origin
+        logger.debug(f"正在为会话 {session_id} 注入图谱记忆...")
 
         try:
             query_to_embed = event.message_str
@@ -243,53 +262,125 @@ class PluginService:
     async def _handle_buffer_flush(
         self, session_id: str, session_name: str, text: str, is_group: bool, persona_id: str
     ):
-        """处理缓冲区刷新事件，提取知识并存入图数据库。"""
+        """
+        处理缓冲区刷新事件，采用中期记忆策略：
+        - 首次刷新（无中期记忆）：将对话总结为中期记忆
+        - 后续刷新（有中期记忆）：
+          - 任务1：从中期记忆提取知识图谱
+          - 任务2：将中期记忆+新对话压缩为新的中期记忆
+        """
         if is_group and not self.enable_group_learning:
             return
 
-        if not self.graph_engine or not self.extractor:
+        if not self.extractor:
             logger.warning("[GraphMemory] 核心组件未初始化，无法处理缓冲区刷新。")
             return
 
-        task_description = f"正在刷新会话 {session_id} ({session_name}) (人格: {persona_id}) 的缓冲区, 文本长度: {len(text)}"
-        logger.info(f"[GraphMemory] {task_description}")
-        extracted_data = await self.extractor.extract(
-            text_block=text, session_id=session_id, session_name=session_name, is_group=is_group
+        logger.info(
+            f"[GraphMemory] 正在刷新会话 {session_id} ({session_name}) (人格: {persona_id}) 的缓冲区, 文本长度: {len(text)}"
         )
-        if not extracted_data:
-            logger.debug("[GraphMemory] 未从缓冲区提取到结构化数据。")
+
+        # 检查是否存在中期记忆
+        existing_memory = self.buffer_manager.get_intermediate_memory(session_id, persona_id)
+
+        if not existing_memory:
+            # === 首次刷新：创建中期记忆 ===
+            logger.info(f"[GraphMemory] 会话 {session_id}: 首次刷新，创建中期记忆。")
+            summary = await self.extractor.summarize_to_intermediate(
+                text, provider_id=self.summarization_provider_id
+            )
+            if summary:
+                version = self.buffer_manager.set_intermediate_memory(
+                    session_id, persona_id, summary
+                )
+                logger.info(
+                    f"[GraphMemory] 会话 {session_id}: 中期记忆已创建 (版本: {version})。"
+                )
+            else:
+                logger.warning(f"[GraphMemory] 会话 {session_id}: 中期记忆创建失败。")
+        else:
+            # === 后续刷新：提取知识 + 更新中期记忆 ===
+            logger.info(
+                f"[GraphMemory] 会话 {session_id}: 检测到现有中期记忆 (版本: {existing_memory['version']})，执行双任务处理。"
+            )
+            old_summary = existing_memory["summary_text"]
+
+            # 任务1：从中期记忆提取知识图谱（如果graph_engine可用）
+            knowledge_task = None
+            if self.graph_engine:
+                knowledge_task = asyncio.create_task(
+                    self._extract_knowledge_from_intermediate(
+                        session_id, session_name, is_group, old_summary
+                    )
+                )
+
+            # 任务2：压缩中期记忆
+            new_summary = await self.extractor.compress_memory(
+                previous_summary=old_summary,
+                new_events=text,
+                provider_id=self.summarization_provider_id,
+            )
+
+            if new_summary:
+                version = self.buffer_manager.set_intermediate_memory(
+                    session_id, persona_id, new_summary
+                )
+                logger.info(
+                    f"[GraphMemory] 会话 {session_id}: 中期记忆已更新 (版本: {version})。"
+                )
+            else:
+                logger.warning(f"[GraphMemory] 会话 {session_id}: 中期记忆压缩失败。")
+
+            # 等待知识提取完成
+            if knowledge_task:
+                try:
+                    await knowledge_task
+                except Exception as e:
+                    logger.error(f"[GraphMemory] 知识提取任务异常: {e}", exc_info=True)
+
+    async def _extract_knowledge_from_intermediate(
+        self, session_id: str, session_name: str, is_group: bool, summary_text: str
+    ):
+        """从中期记忆中提取知识图谱信息。"""
+        if not self.graph_engine or not self.extractor:
             return
 
+        logger.info(f"[GraphMemory] 会话 {session_id}: 正在从中期记忆提取知识图谱...")
+
+        # 使用现有的extract方法，传入中期记忆作为文本
+        extracted_data = await self.extractor.extract(
+            text_block=summary_text,
+            session_id=session_id,
+            session_name=session_name,
+            is_group=is_group,
+        )
+
+        if not extracted_data:
+            logger.debug(f"[GraphMemory] 会话 {session_id}: 未从中期记忆提取到结构化数据。")
+            return
+
+        # 写入图数据库
         tasks = [self.graph_engine.add_user(user) for user in extracted_data.users]
         tasks.extend(
-            [
-                self.graph_engine.add_session(session)
-                for session in extracted_data.sessions
-            ]
+            [self.graph_engine.add_session(session) for session in extracted_data.sessions]
         )
         tasks.extend(
             [self.graph_engine.add_entity(entity) for entity in extracted_data.entities]
         )
         await asyncio.gather(*tasks)
 
-        tasks = [
-            self.graph_engine.add_message(message)
-            for message in extracted_data.messages
-        ]
+        tasks = [self.graph_engine.add_message(message) for message in extracted_data.messages]
         await asyncio.gather(*tasks)
 
-        tasks = [
-            self.graph_engine.add_relation(rel) for rel in extracted_data.relations
-        ]
+        tasks = [self.graph_engine.add_relation(rel) for rel in extracted_data.relations]
         tasks.extend(
-            [
-                self.graph_engine.add_mention(mention)
-                for mention in extracted_data.mentions
-            ]
+            [self.graph_engine.add_mention(mention) for mention in extracted_data.mentions]
         )
         await asyncio.gather(*tasks)
 
-        logger.info(f"[GraphMemory] 已为会话 {session_id} 注入结构化数据。")
+        logger.info(
+            f"[GraphMemory] 会话 {session_id}: 已从中期记忆提取并存储知识图谱数据。"
+        )
 
     async def _maintenance_loop(self):
         """后台维护循环，定期执行图修剪和记忆巩固。"""
@@ -323,11 +414,15 @@ class PluginService:
                 logger.error(f"[GraphMemory] 维护循环出错: {e}")
 
     async def _run_consolidation_cycle(self):
-        """执行一轮记忆巩固。"""
+        """
+        执行一轮记忆巩固，采用新的两阶段工作流：
+        1.  如果存在中期记忆，从中提取高质量知识。
+        2.  将旧的记忆和新的对话压缩成新的中期记忆。
+        """
         if not self.graph_engine or not self.extractor:
             return
 
-        logger.debug("[GraphMemory] 正在运行记忆巩固周期...")
+        logger.debug("[GraphMemory] 正在运行新的两阶段记忆巩固周期...")
         try:
             sessions_to_process = (
                 await self.graph_engine.find_sessions_for_consolidation(
@@ -342,30 +437,78 @@ class PluginService:
                 f"[GraphMemory] 发现 {len(sessions_to_process)} 个会话需要进行记忆巩固。"
             )
             for session_id in sessions_to_process:
-                try:
-                    consolidation_result = (
-                        self.graph_engine.get_messages_for_consolidation(session_id)
-                    )
-                    if not consolidation_result:
-                        continue
+                await self._process_session_consolidation(session_id)
 
-                    message_ids, text_block, user_ids = consolidation_result
-                    if not text_block:
-                        continue
-
-                    summary = await self.extractor.summarize(
-                        text_block, provider_id=self.summarization_provider_id
-                    )
-                    if summary:
-                        await self.graph_engine.consolidate_memory(
-                            session_id, summary, message_ids, user_ids
-                        )
-                except Exception as e:
-                    logger.error(
-                        f"为会话 {session_id} 进行巩固时出错: {e}", exc_info=True
-                    )
         except Exception as e:
             logger.error(f"查找需要巩固的会话失败: {e}", exc_info=True)
+
+    async def _process_session_consolidation(self, session_id: str):
+        """处理单个会话的记忆巩固。"""
+        if not self.graph_engine or not self.extractor:
+            return
+
+        try:
+            # 获取用于巩固的原始消息
+            consolidation_result = self.graph_engine.get_messages_for_consolidation(
+                session_id
+            )
+            if not consolidation_result:
+                return
+
+            message_ids, new_events, user_ids = consolidation_result
+            if not new_events:
+                return
+
+            # 获取最新的中期记忆
+            latest_memory = await self.graph_engine.get_latest_memory_fragment(session_id)
+
+            knowledge_extraction_task = None
+            if latest_memory and latest_memory.get("text"):
+                # 任务 A: 从旧的摘要中提取知识
+                logger.info(f"[GraphMemory] 会话 {session_id}: 从现有记忆中提取知识。")
+                knowledge_extraction_task = asyncio.create_task(
+                    self.extractor.extract_from_summary(
+                        latest_memory["text"], provider_id=self.learning_model_id
+                    )
+                )
+
+            # 任务 B: 压缩记忆
+            logger.info(f"[GraphMemory] 会话 {session_id}: 正在压缩新旧记忆。")
+            previous_summary = latest_memory["text"] if latest_memory else "这是对话的开始。"
+            new_summary = await self.extractor.compress_memory(
+                previous_summary=previous_summary,
+                new_events=new_events,
+                provider_id=self.summarization_provider_id,
+            )
+
+            if not new_summary:
+                logger.warning(f"[GraphMemory] 会话 {session_id}: 记忆压缩失败，跳过本轮巩固。")
+                if knowledge_extraction_task:
+                    knowledge_extraction_task.cancel()
+                return
+
+            # 等待知识提取完成（如果启动了）
+            if knowledge_extraction_task:
+                extracted_knowledge = await knowledge_extraction_task
+                if extracted_knowledge:
+                    logger.info(f"[GraphMemory] 会话 {session_id}: 成功提取 {len(extracted_knowledge.entities)} 个实体和 {len(extracted_knowledge.relations)} 条关系。")
+                    # 将提取的知识存入图数据库
+                    entity_tasks = [self.graph_engine.add_entity(e) for e in extracted_knowledge.entities]
+                    relation_tasks = [self.graph_engine.add_relation(r) for r in extracted_knowledge.relations]
+                    await asyncio.gather(*entity_tasks, *relation_tasks)
+                else:
+                    logger.info(f"[GraphMemory] 会话 {session_id}: 未从旧记忆中提取到新知识。")
+
+            # 存储新的记忆摘要并归档旧消息
+            await self.graph_engine.consolidate_memory(
+                session_id, new_summary, message_ids, user_ids
+            )
+            logger.info(f"[GraphMemory] 会话 {session_id}: 成功完成记忆巩固。")
+
+        except Exception as e:
+            logger.error(
+                f"为会话 {session_id} 进行巩固时出错: {e}", exc_info=True
+            )
 
     async def _get_persona_id(self, event: AstrMessageEvent) -> str:
         """根据事件和配置确定当前应使用的 Persona ID。"""

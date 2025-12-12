@@ -215,6 +215,14 @@ MIGRATE_LINK_MEMORIES = """
     MERGE (s)-[:SESSION_HAS_MEMORY]->(mf)
 """
 
+# 获取一个会话中最新的一个记忆摘要节点。
+GET_LATEST_MEMORY_FRAGMENT = """
+    MATCH (s:Session {id: $sid})-[:SESSION_HAS_MEMORY]->(mf:MemoryFragment)
+    RETURN mf
+    ORDER BY mf.timestamp DESC
+    LIMIT 1
+"""
+
 # 获取全局图谱的所有节点。
 GET_GLOBAL_GRAPH_NODES = "MATCH (n) RETURN n"
 

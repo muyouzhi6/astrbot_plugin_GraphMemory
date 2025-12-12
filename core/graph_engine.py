@@ -42,6 +42,7 @@ from .queries import (
     GET_GLOBAL_GRAPH_NODES,
     GET_GLOBAL_GRAPH_OPTIMIZED_EDGES,
     GET_GLOBAL_GRAPH_OPTIMIZED_NODES,
+    GET_LATEST_MEMORY_FRAGMENT,
     GET_MESSAGES_FOR_CONSOLIDATION,
     GET_REFLECTION_CANDIDATES,
     GET_SESSION_GRAPH_EDGES_PART1,
@@ -863,6 +864,25 @@ class GraphEngine:
         except Exception as e:
             logger.error(f"[GraphMemory] 获取所有上下文失败: {e}")
             return []
+
+    async def get_latest_memory_fragment(self, session_id: str) -> dict | None:
+        """[异步] 获取指定会话最新的一个记忆摘要节点。"""
+        return await self._run_in_executor(
+            self._get_latest_memory_fragment_sync, session_id
+        )
+
+    def _get_latest_memory_fragment_sync(self, session_id: str) -> dict | None:
+        """[同步] 获取最新记忆摘要的实现。"""
+        try:
+            res = self.execute_query(
+                GET_LATEST_MEMORY_FRAGMENT, {"sid": session_id}
+            )
+            if res.has_next():
+                return res.get_next()[0]
+            return None
+        except Exception as e:
+            logger.error(f"[GraphMemory] 获取会话 {session_id} 的最新记忆失败: {e}")
+            return None
 
     async def get_full_graph(self, session_id: str) -> dict | None:
         """[异步] 导出指定会话的完整子图，用于 WebUI 可视化。"""

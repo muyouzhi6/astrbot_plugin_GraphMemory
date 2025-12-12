@@ -97,6 +97,18 @@ class BufferManager:
                     last_activity_time REAL NOT NULL
                 )
             """)
+            # 中期记忆表：存储会话的压缩摘要
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS intermediate_memory (
+                    session_id TEXT NOT NULL,
+                    persona_id TEXT NOT NULL,
+                    summary_text TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (session_id, persona_id)
+                )
+            """)
 
             conn.commit()
 
@@ -453,3 +465,73 @@ class BufferManager:
                 pass  # 任务被取消是预期的
 
         logger.info("[GraphMemory Buffer] 缓冲区管理器已停止。")
+
+    # ============ 中期记忆 CRUD ============
+
+    def get_intermediate_memory(
+        self, session_id: str, persona_id: str
+    ) -> dict | None:
+        """获取指定会话和人格的中期记忆。"""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT summary_text, version, created_at, updated_at
+                FROM intermediate_memory
+                WHERE session_id = ? AND persona_id = ?
+                """,
+                (session_id, persona_id),
+            ).fetchone()
+            if row:
+                return {
+                    "session_id": session_id,
+                    "persona_id": persona_id,
+                    "summary_text": row["summary_text"],
+                    "version": row["version"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            return None
+
+    def set_intermediate_memory(
+        self, session_id: str, persona_id: str, summary_text: str
+    ) -> int:
+        """创建或更新中期记忆，返回新的版本号。"""
+        now = time.time()
+        with self._get_connection() as conn:
+            existing = conn.execute(
+                "SELECT version FROM intermediate_memory WHERE session_id = ? AND persona_id = ?",
+                (session_id, persona_id),
+            ).fetchone()
+
+            if existing:
+                new_version = existing["version"] + 1
+                conn.execute(
+                    """
+                    UPDATE intermediate_memory
+                    SET summary_text = ?, version = ?, updated_at = ?
+                    WHERE session_id = ? AND persona_id = ?
+                    """,
+                    (summary_text, new_version, now, session_id, persona_id),
+                )
+            else:
+                new_version = 1
+                conn.execute(
+                    """
+                    INSERT INTO intermediate_memory
+                    (session_id, persona_id, summary_text, version, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (session_id, persona_id, summary_text, new_version, now, now),
+                )
+            conn.commit()
+            return new_version
+
+    def delete_intermediate_memory(self, session_id: str, persona_id: str) -> bool:
+        """删除指定的中期记忆。"""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM intermediate_memory WHERE session_id = ? AND persona_id = ?",
+                (session_id, persona_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0

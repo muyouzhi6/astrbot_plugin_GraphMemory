@@ -93,6 +93,67 @@ SUMMARIZATION_PROMPT = """
 **摘要:**
 """
 
+# --- 从摘要中提取知识的提示 ---
+
+KNOWLEDGE_EXTRACTION_FROM_SUMMARY_PROMPT = """
+你是一个高度智能的知识图谱分析师。你的任务是从一段总结性的文本中提取关键的结构化信息。
+
+**输入摘要:**
+```
+{text}
+```
+
+**指令:**
+1.  **识别核心实体**: 提取摘要中提到的关键人物、地点、概念或事件。对它们进行归一化处理。
+2.  **提取关系**: 寻找实体之间明确的关系。
+3.  **输出JSON**: 将所有提取的信息格式化为一个单一的JSON对象，其结构如下。只输出JSON。如果摘要中没有可提取的结构化信息，返回一个只包含空列表的JSON对象。
+
+**输出JSON结构:**
+```json
+{{
+  "entities": [
+    {{
+      "name": "Normalized Entity Name",
+      "type": "Concept, Person, Location, etc.",
+      "summary": "A brief description of the entity, if available."
+    }}
+  ],
+  "relations": [
+    {{
+      "src_entity": "Entity1 Name",
+      "tgt_entity": "Entity2 Name",
+      "relation": "IS_A, DEVELOPS, LIKES, etc."
+    }}
+  ]
+}}
+```
+"""
+
+# --- 记忆压缩提示 ---
+
+MEMORY_COMPRESSION_PROMPT = """
+你是一位记忆管理专家。你的任务是将一份旧的记忆摘要和一段新的对话历史压缩成一份更新后的、简洁的记忆摘要。
+
+**旧的记忆摘要:**
+```
+{previous_summary}
+```
+
+**新的对话历史:**
+```
+{new_events}
+```
+
+**指令:**
+1.  阅读并理解旧的摘要和新的对话。
+2.  将新对话中的关键信息（重要事件、事实、观点变化）整合进旧摘要中。
+3.  如果新对话与旧摘要无关，则创建一个关于新对话的新摘要。
+4.  如果新对话只是对旧摘要的简单确认或闲聊，可以保持旧摘要不变。
+5.  最终输出一个单一、连贯、更新后的摘要段落。
+
+**更新后的摘要:**
+"""
+
 # --- Agentic 反思提示 ---
 
 FACT_CORRECTION_PROMPT = """
@@ -115,4 +176,23 @@ RELATION_INFERENCE_PROMPT = """
 例如，如果"A认识B"且"B认识C"，你可以推断"A和C可能间接认识"。
 如果存在，请以JSON格式返回你的推断。JSON结构必须如下：
 `{{"insight": "你的推断理由。", "action": "create_relation | no_action", "source": "源实体名称", "target": "目标实体名称", "relation_label": "推断出的关系标签"}}`
+"""
+
+# --- 中期记忆总结提示 ---
+
+INTERMEDIATE_MEMORY_PROMPT = """
+你是一位记忆管理专家。请将以下对话历史总结为一段简洁的记忆摘要，用于帮助AI在后续对话中回忆之前的交流内容。
+
+**对话历史:**
+```
+{text}
+```
+
+**指令:**
+1. 以第三人称视角总结对话的关键信息。
+2. 保留重要的事实、用户偏好、讨论的主题和做出的决定。
+3. 忽略无关的闲聊和礼貌用语。
+4. 摘要应简洁但信息完整，便于后续对话参考。
+
+**摘要:**
 """
