@@ -1,7 +1,8 @@
 """KuzuDB Schema 定义和初始化"""
 
+
 import kuzu
-from pathlib import Path
+
 from astrbot.api import logger
 
 
@@ -18,7 +19,7 @@ def get_embedding_dim_from_provider(embedding_provider) -> int:
         return 1536
 
     # 尝试从 provider 获取维度信息
-    if hasattr(embedding_provider, 'embedding_dim'):
+    if hasattr(embedding_provider, "embedding_dim"):
         return embedding_provider.embedding_dim
 
     # 默认维度
@@ -49,7 +50,7 @@ def _create_node_tables(conn: kuzu.Connection, embedding_dim: int):
 
     # User 节点
     try:
-        conn.execute(f"""
+        conn.execute("""
             CREATE NODE TABLE IF NOT EXISTS User (
                 id STRING PRIMARY KEY,
                 name STRING,
@@ -64,7 +65,7 @@ def _create_node_tables(conn: kuzu.Connection, embedding_dim: int):
 
     # Session 节点
     try:
-        conn.execute(f"""
+        conn.execute("""
             CREATE NODE TABLE IF NOT EXISTS Session (
                 id STRING PRIMARY KEY,
                 name STRING,

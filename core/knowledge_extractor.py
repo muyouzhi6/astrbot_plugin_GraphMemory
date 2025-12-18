@@ -2,12 +2,12 @@
 
 import json
 import re
-from typing import Optional, Any
+from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.star import Context
 
-from .entities import ExtractedKnowledge, EntityNode, RelatedToRel
+from .entities import EntityNode, ExtractedKnowledge, RelatedToRel
 from .prompts import EXTRACTION_PROMPT, QUERY_REWRITING_PROMPT
 
 
@@ -22,8 +22,8 @@ class KnowledgeExtractor:
     def __init__(
         self,
         context: Context,
-        llm_provider_id: Optional[str] = None,
-        embedding_provider: Optional[Any] = None,
+        llm_provider_id: str | None = None,
+        embedding_provider: Any | None = None,
     ):
         self.context = context
         self.llm_provider_id = llm_provider_id
@@ -33,7 +33,7 @@ class KnowledgeExtractor:
         self,
         text: str,
         session_id: str,
-    ) -> Optional[ExtractedKnowledge]:
+    ) -> ExtractedKnowledge | None:
         """从对话文本中提取知识
 
         Args:
@@ -120,7 +120,7 @@ class KnowledgeExtractor:
         query: str,
         history: str,
         session_id: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """重写查询
 
         Args:
@@ -169,7 +169,7 @@ class KnowledgeExtractor:
             logger.error(f"[GraphMemory] 查询重写失败: {e}", exc_info=True)
             return None
 
-    def _find_json_blob(self, text: str) -> Optional[str]:
+    def _find_json_blob(self, text: str) -> str | None:
         """从文本中提取 JSON 字符串
 
         Args:

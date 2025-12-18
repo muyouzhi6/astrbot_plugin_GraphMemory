@@ -1,13 +1,12 @@
 """记忆检索模块"""
 
 import math
-from typing import List, Optional, Any, Tuple
+from typing import Any
 
 from astrbot.api import logger
 
-from .graph_store import GraphStore
 from .entities import EntityNode
-
+from .graph_store import GraphStore
 
 # 检查 jieba 是否可用
 try:
@@ -15,6 +14,21 @@ try:
     JIEBA_AVAILABLE = True
 except ImportError:
     JIEBA_AVAILABLE = False
+
+
+def _load_stopwords(stopwords_path: str) -> set[str]:
+    """加载停用词表"""
+    try:
+        from pathlib import Path
+        path = Path(stopwords_path)
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                stopwords = {line.strip() for line in f if line.strip()}
+            logger.info(f"[GraphMemory] 加载了 {len(stopwords)} 个停用词")
+            return stopwords
+    except Exception as e:
+        logger.warning(f"[GraphMemory] 加载停用词失败: {e}")
+    return set()
 
 
 class MemoryRetriever:
@@ -30,15 +44,21 @@ class MemoryRetriever:
     def __init__(
         self,
         graph_store: GraphStore,
-        embedding_provider: Optional[Any] = None,
+        embedding_provider: Any | None = None,
+        stopwords_path: str | None = None,
     ):
         self.graph_store = graph_store
         self.embedding_provider = embedding_provider
 
+        # 加载停用词
+        self.stopwords = set()
+        if stopwords_path:
+            self.stopwords = _load_stopwords(stopwords_path)
+
     async def search_memory(
         self,
         query: str,
-        query_embedding: Optional[List[float]],
+        query_embedding: list[float] | None,
         session_id: str,
         persona_id: str,
         top_k: int = 7,
@@ -84,9 +104,9 @@ class MemoryRetriever:
 
     async def _vector_search(
         self,
-        query_embedding: List[float],
+        query_embedding: list[float],
         top_k: int,
-    ) -> List[Tuple[EntityNode, float]]:
+    ) -> list[tuple[EntityNode, float]]:
         """向量检索
 
         Args:
@@ -141,7 +161,7 @@ class MemoryRetriever:
         self,
         query: str,
         top_k: int,
-    ) -> List[Tuple[EntityNode, float]]:
+    ) -> list[tuple[EntityNode, float]]:
         """关键词检索
 
         Args:
@@ -194,7 +214,7 @@ class MemoryRetriever:
 
         return await self.graph_store._execute_in_thread(_search)
 
-    def _extract_keywords(self, text: str, top_k: int = 5) -> List[str]:
+    def _extract_keywords(self, text: str, top_k: int = 5) -> list[str]:
         """提取关键词
 
         Args:
@@ -206,20 +226,25 @@ class MemoryRetriever:
         """
         if JIEBA_AVAILABLE:
             try:
-                keywords = jieba.analyse.extract_tags(text, topK=top_k)
-                return keywords
+                keywords = jieba.analyse.extract_tags(text, topK=top_k * 2)
+                # 过滤停用词
+                if self.stopwords:
+                    keywords = [kw for kw in keywords if kw not in self.stopwords]
+                return keywords[:top_k]
             except Exception as e:
                 logger.warning(f"[GraphMemory] jieba 提取关键词失败: {e}")
 
-        # 简单的分词
+        # 简单的分词（过滤停用词）
         words = text.split()
+        if self.stopwords:
+            words = [w for w in words if w not in self.stopwords]
         return words[:top_k]
 
     def _merge_results(
         self,
-        vector_results: List[Tuple[EntityNode, float]],
-        keyword_results: List[Tuple[EntityNode, float]],
-    ) -> List[Tuple[EntityNode, float]]:
+        vector_results: list[tuple[EntityNode, float]],
+        keyword_results: list[tuple[EntityNode, float]],
+    ) -> list[tuple[EntityNode, float]]:
         """合并检索结果
 
         Args:
@@ -239,9 +264,9 @@ class MemoryRetriever:
 
     async def _filter_by_persona(
         self,
-        entities: List[Tuple[EntityNode, float]],
+        entities: list[tuple[EntityNode, float]],
         persona_id: str,
-    ) -> List[Tuple[EntityNode, float]]:
+    ) -> list[tuple[EntityNode, float]]:
         """过滤当前人格相关的实体
 
         Args:
@@ -284,7 +309,7 @@ class MemoryRetriever:
 
     def _format_memory_context(
         self,
-        entities: List[Tuple[EntityNode, float]],
+        entities: list[tuple[EntityNode, float]],
     ) -> str:
         """格式化记忆上下文
 

@@ -3,14 +3,14 @@
 import asyncio
 import sqlite3
 import time
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Callable, Coroutine, Any, Optional
+from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .entities import BufferedMessage
-
 
 # 刷新回调类型: (session_id, session_name, text, is_group, persona_id)
 FlushCallback = Callable[[str, str, str, bool, str], Coroutine[Any, Any, None]]
@@ -41,7 +41,7 @@ class MemoryBuffer:
 
         self._db_path = data_path / "buffer.db"
         self._stop_event = asyncio.Event()
-        self._timer_task: Optional[asyncio.Task] = None
+        self._timer_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
         # 初始化数据库
@@ -319,7 +319,7 @@ class MemoryBuffer:
 
         return event.unified_msg_origin
 
-    def get_last_persona_id(self, session_id: str) -> Optional[str]:
+    def get_last_persona_id(self, session_id: str) -> str | None:
         """获取会话的最后人格ID"""
         with self._get_connection() as conn:
             row = conn.execute(

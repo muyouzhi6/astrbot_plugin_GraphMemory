@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
 
 
 @dataclass
@@ -11,8 +10,8 @@ class UserNode:
     id: str
     name: str
     platform: str
-    created_at: Optional[datetime] = None
-    last_active: Optional[datetime] = None
+    created_at: datetime | None = None
+    last_active: datetime | None = None
 
 
 @dataclass
@@ -22,8 +21,8 @@ class SessionNode:
     name: str
     type: str  # PRIVATE / GROUP
     persona_id: str = "default"
-    created_at: Optional[datetime] = None
-    last_active: Optional[datetime] = None
+    created_at: datetime | None = None
+    last_active: datetime | None = None
 
 
 @dataclass
@@ -32,10 +31,10 @@ class EntityNode:
     name: str
     type: str  # PERSON / PLACE / THING / CONCEPT / EVENT
     description: str
-    embedding: Optional[list[float]] = None
+    embedding: list[float] | None = None
     importance: float = 1.0
-    created_at: Optional[datetime] = None
-    last_accessed: Optional[datetime] = None
+    created_at: datetime | None = None
+    last_accessed: datetime | None = None
     access_count: int = 0
 
 
@@ -45,7 +44,7 @@ class ParticipatedInRel:
     user_id: str
     session_id: str
     role: str = "MEMBER"  # MEMBER / ADMIN / OWNER
-    joined_at: Optional[datetime] = None
+    joined_at: datetime | None = None
 
 
 @dataclass
@@ -56,8 +55,8 @@ class RelatedToRel:
     relation: str
     strength: float = 1.0
     evidence: str = ""
-    created_at: Optional[datetime] = None
-    last_updated: Optional[datetime] = None
+    created_at: datetime | None = None
+    last_updated: datetime | None = None
 
 
 @dataclass
@@ -65,8 +64,8 @@ class MentionedInRel:
     """实体在会话中被提及"""
     entity_name: str
     session_id: str
-    first_mentioned: Optional[datetime] = None
-    last_mentioned: Optional[datetime] = None
+    first_mentioned: datetime | None = None
+    last_mentioned: datetime | None = None
     mention_count: int = 1
     sentiment: str = "NEUTRAL"  # POSITIVE / NEUTRAL / NEGATIVE
 
@@ -76,8 +75,8 @@ class KnowsRel:
     """用户了解实体"""
     user_id: str
     entity_name: str
-    first_known: Optional[datetime] = None
-    last_updated: Optional[datetime] = None
+    first_known: datetime | None = None
+    last_updated: datetime | None = None
     familiarity: float = 1.0
 
 

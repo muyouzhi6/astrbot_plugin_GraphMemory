@@ -1,26 +1,23 @@
 """图数据库存储模块"""
 
 import asyncio
+import functools
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Any, List
-import functools
+from typing import Any
 
 import kuzu
 
 from astrbot.api import logger
 
 from .entities import (
-    UserNode,
-    SessionNode,
     EntityNode,
-    ParticipatedInRel,
     RelatedToRel,
-    MentionedInRel,
-    KnowsRel,
+    SessionNode,
+    UserNode,
 )
-from .schema import initialize_schema, get_embedding_dim_from_provider
+from .schema import get_embedding_dim_from_provider, initialize_schema
 
 
 class GraphStore:
@@ -32,9 +29,10 @@ class GraphStore:
     - 执行图查询
     """
 
-    def __init__(self, db_path: Path, embedding_provider: Optional[Any] = None):
+    def __init__(self, db_path: Path, embedding_provider: Any | None = None):
         self.db_path = db_path / "kuzu_db_v3"
-        self.db_path.mkdir(parents=True, exist_ok=True)
+        # 只创建父目录，让 KuzuDB 自己创建数据库目录
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.embedding_provider = embedding_provider
         self.embedding_dim = get_embedding_dim_from_provider(embedding_provider)
@@ -195,7 +193,7 @@ class GraphStore:
 
         return await self._execute_in_thread(_add)
 
-    async def get_entity(self, name: str) -> Optional[EntityNode]:
+    async def get_entity(self, name: str) -> EntityNode | None:
         """获取实体节点"""
         def _get():
             try:

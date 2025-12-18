@@ -74,13 +74,13 @@
         "default": 3600
     },
     "time_decay_rate": {
-        "type": "number",
+        "type": "float",
         "description": "时间衰减率",
         "hint": "每次维护时，实体重要性和关系强度的衰减率（0-1之间）。值越小，衰减越快。",
         "default": 0.95
     },
     "min_importance_threshold": {
-        "type": "number",
+        "type": "float",
         "description": "最小重要性阈值",
         "hint": "实体重要性低于此阈值时，将在维护时被清理。",
         "default": 0.1
