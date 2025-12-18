@@ -10,6 +10,8 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context
 
 from .entities import SessionNode
+from .entity_disambiguation import EntityDisambiguation
+from .function_calling import FunctionCallingHandler
 from .graph_store import GraphStore
 from .knowledge_extractor import KnowledgeExtractor
 from .memory_buffer import MemoryBuffer
@@ -51,6 +53,9 @@ class GraphMemoryManager:
         self.extractor = None
         self.retriever = None
         self.buffer = None
+        self.function_calling = None
+        self.disambiguation = None
+        self._disambiguation_task = None
 
     async def ensure_initialized(self):
         """确保核心模块已初始化（延迟初始化）"""
@@ -90,6 +95,8 @@ class GraphMemoryManager:
                 self.graph_store,
                 self.embedding_provider,
                 str(stopwords_path) if stopwords_path.exists() else None,
+                vector_weight=self.config.get("vector_search_weight", 0.7),
+                keyword_weight=self.config.get("keyword_search_weight", 0.3),
             )
             self.buffer = MemoryBuffer(
                 self.data_path,
@@ -97,6 +104,17 @@ class GraphMemoryManager:
                 self.config.get("buffer_size_private", 10),
                 self.config.get("buffer_size_group", 20),
                 self.config.get("buffer_timeout", 1800),
+            )
+
+            # Function Calling 处理器
+            self.function_calling = FunctionCallingHandler(self)
+
+            # 实体消歧器
+            self.disambiguation = EntityDisambiguation(
+                self.context,
+                self.graph_store,
+                self.embedding_provider,
+                self.config.get("llm_provider_id", ""),
             )
 
             # 启动后台任务
@@ -202,6 +220,38 @@ class GraphMemoryManager:
         """获取图谱统计信息"""
         await self.ensure_initialized()
         return await self.graph_store.get_stats()
+
+    # ==================== 管理操作 ====================
+
+    async def search_entities(
+        self,
+        query: str,
+        entity_type: str | None = None,
+        limit: int = 10,
+    ) -> list:
+        """搜索实体"""
+        await self.ensure_initialized()
+        return await self.graph_store.search_entities(query, entity_type, limit)
+
+    async def get_entity_relations(self, entity_name: str) -> list[dict]:
+        """获取实体关系"""
+        await self.ensure_initialized()
+        return await self.graph_store.get_entity_relations(entity_name)
+
+    async def delete_entity(self, entity_name: str) -> tuple[bool, int]:
+        """删除实体"""
+        await self.ensure_initialized()
+        return await self.graph_store.delete_entity(entity_name)
+
+    async def export_graph(self, persona_id: str | None = None) -> dict:
+        """导出图谱"""
+        await self.ensure_initialized()
+        return await self.graph_store.export_graph(persona_id)
+
+    async def import_graph(self, data: dict, merge: bool = True) -> tuple[int, int]:
+        """导入图谱"""
+        await self.ensure_initialized()
+        return await self.graph_store.import_graph(data, merge)
 
     # ==================== 内部方法 ====================
 
@@ -309,6 +359,10 @@ class GraphMemoryManager:
         prune_interval = self.config.get("prune_interval", 3600)
         time_decay_rate = self.config.get("time_decay_rate", 0.95)
         min_importance_threshold = self.config.get("min_importance_threshold", 0.1)
+        disambiguation_interval = self.config.get("disambiguation_interval", 7200)
+        enable_disambiguation = self.config.get("enable_entity_disambiguation", False)
+
+        last_disambiguation_time = 0
 
         while True:
             try:
@@ -325,6 +379,22 @@ class GraphMemoryManager:
                 )
 
                 logger.info(f"[GraphMemory] 图谱维护完成，清理了 {count} 个实体")
+
+                # 实体消歧（如果启用且到达间隔时间）
+                import time
+                current_time = time.time()
+                if enable_disambiguation and (current_time - last_disambiguation_time) >= disambiguation_interval:
+                    if self.disambiguation:
+                        logger.info("[GraphMemory] 开始实体消歧...")
+                        result = await self.disambiguation.run_disambiguation(
+                            similarity_threshold=0.85,
+                            auto_merge=False,
+                        )
+                        logger.info(
+                            f"[GraphMemory] 实体消歧完成: 找到 {result['found']} 对相似实体，"
+                            f"合并了 {result['merged']} 对"
+                        )
+                        last_disambiguation_time = current_time
 
             except asyncio.CancelledError:
                 break

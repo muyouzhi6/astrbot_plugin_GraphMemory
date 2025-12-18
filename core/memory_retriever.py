@@ -46,9 +46,13 @@ class MemoryRetriever:
         graph_store: GraphStore,
         embedding_provider: Any | None = None,
         stopwords_path: str | None = None,
+        vector_weight: float = 0.7,
+        keyword_weight: float = 0.3,
     ):
         self.graph_store = graph_store
         self.embedding_provider = embedding_provider
+        self.vector_weight = vector_weight
+        self.keyword_weight = keyword_weight
 
         # 加载停用词
         self.stopwords = set()
@@ -83,8 +87,8 @@ class MemoryRetriever:
         # 2. 关键词检索
         keyword_results = await self._keyword_search(query, top_k)
 
-        # 3. 合并去重
-        all_entities = self._merge_results(vector_results, keyword_results)
+        # 3. 合并去重（应用权重）
+        all_entities = self._merge_results_with_weights(vector_results, keyword_results)
 
         # 4. 过滤当前人格相关的实体
         filtered_entities = await self._filter_by_persona(
@@ -92,15 +96,14 @@ class MemoryRetriever:
             persona_id,
         )
 
-        # 5. 排序并取 top_k
-        sorted_entities = sorted(
-            filtered_entities,
-            key=lambda x: x[1],  # 按分数排序
-            reverse=True,
-        )[:top_k]
+        # 5. 重排序（考虑重要性、访问频率、时间衰减）
+        reranked_entities = self._rerank_results(filtered_entities)
 
-        # 6. 格式化输出
-        return self._format_memory_context(sorted_entities)
+        # 6. 取 top_k
+        top_entities = reranked_entities[:top_k]
+
+        # 7. 格式化输出
+        return self._format_memory_context(top_entities)
 
     async def _vector_search(
         self,
@@ -245,7 +248,7 @@ class MemoryRetriever:
         vector_results: list[tuple[EntityNode, float]],
         keyword_results: list[tuple[EntityNode, float]],
     ) -> list[tuple[EntityNode, float]]:
-        """合并检索结果
+        """合并检索结果（旧方法，保留兼容性）
 
         Args:
             vector_results: 向量检索结果
@@ -261,6 +264,88 @@ class MemoryRetriever:
                 merged[entity.name] = (entity, score)
 
         return list(merged.values())
+
+    def _merge_results_with_weights(
+        self,
+        vector_results: list[tuple[EntityNode, float]],
+        keyword_results: list[tuple[EntityNode, float]],
+    ) -> list[tuple[EntityNode, float]]:
+        """合并检索结果（应用权重）
+
+        Args:
+            vector_results: 向量检索结果
+            keyword_results: 关键词检索结果
+
+        Returns:
+            合并后的结果
+        """
+        # 使用字典去重，加权合并分数
+        merged = {}
+
+        # 向量检索结果（应用向量权重）
+        for entity, score in vector_results:
+            weighted_score = score * self.vector_weight
+            if entity.name not in merged:
+                merged[entity.name] = [entity, 0.0, False, False]
+            merged[entity.name][1] += weighted_score
+            merged[entity.name][2] = True  # 标记来自向量检索
+
+        # 关键词检索结果（应用关键词权重）
+        for entity, score in keyword_results:
+            weighted_score = score * self.keyword_weight
+            if entity.name not in merged:
+                merged[entity.name] = [entity, 0.0, False, False]
+            merged[entity.name][1] += weighted_score
+            merged[entity.name][3] = True  # 标记来自关键词检索
+
+        # 如果同时出现在两种检索中，给予额外加分
+        for name, data in merged.items():
+            if data[2] and data[3]:  # 同时来自向量和关键词检索
+                data[1] *= 1.2  # 加分 20%
+
+        # 转换为列表
+        return [(data[0], data[1]) for data in merged.values()]
+
+    def _rerank_results(
+        self,
+        entities: list[tuple[EntityNode, float]],
+    ) -> list[tuple[EntityNode, float]]:
+        """重排序结果
+
+        考虑因素:
+        1. 检索分数
+        2. 实体重要性
+        3. 访问频率
+        4. 时间衰减（通过 importance 已体现）
+
+        Args:
+            entities: 实体列表
+
+        Returns:
+            重排序后的实体列表
+        """
+        reranked = []
+
+        for entity, search_score in entities:
+            # 计算综合分数
+            # 检索分数权重: 60%
+            # 重要性权重: 30%
+            # 访问频率权重: 10%
+            importance_score = entity.importance if entity.importance else 0.5
+            access_score = min(entity.access_count / 100.0, 1.0) if entity.access_count else 0.0
+
+            final_score = (
+                search_score * 0.6 +
+                importance_score * 0.3 +
+                access_score * 0.1
+            )
+
+            reranked.append((entity, final_score))
+
+        # 按最终分数排序
+        reranked.sort(key=lambda x: x[1], reverse=True)
+
+        return reranked
 
     async def _filter_by_persona(
         self,
@@ -327,6 +412,56 @@ class MemoryRetriever:
         for entity, score in entities:
             lines.append(f"- {entity.name} ({entity.type}): {entity.description}")
 
-        # TODO: 添加关系信息
+        # 添加关系信息
+        relations = self._get_relations_between_entities(entities)
+        if relations:
+            lines.append("")
+            lines.append("关系:")
+            for rel in relations:
+                lines.append(f"- {rel['from']} -> {rel['to']}: {rel['relation']}")
 
         return "\n".join(lines)
+
+    def _get_relations_between_entities(
+        self,
+        entities: list[tuple[EntityNode, float]],
+    ) -> list[dict]:
+        """获取实体之间的关系
+
+        Args:
+            entities: 实体列表
+
+        Returns:
+            关系列表
+        """
+        if len(entities) < 2:
+            return []
+
+        entity_names = [e[0].name for e in entities]
+
+        try:
+            result = self.graph_store.conn.execute(
+                """
+                MATCH (e1:Entity)-[r:RELATED_TO]->(e2:Entity)
+                WHERE e1.name IN $names AND e2.name IN $names
+                RETURN e1.name as from, e2.name as to, r.relation as relation, r.strength as strength
+                ORDER BY r.strength DESC
+                LIMIT 10
+                """,
+                {"names": entity_names},
+            )
+
+            relations = []
+            while result.has_next():
+                row = result.get_next()
+                relations.append({
+                    "from": row[0],
+                    "to": row[1],
+                    "relation": row[2],
+                    "strength": row[3],
+                })
+
+            return relations
+        except Exception as e:
+            logger.error(f"[GraphMemory] 获取关系失败: {e}", exc_info=True)
+            return []

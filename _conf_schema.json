@@ -84,5 +84,29 @@
         "description": "最小重要性阈值",
         "hint": "实体重要性低于此阈值时，将在维护时被清理。",
         "default": 0.1
+    },
+    "enable_entity_disambiguation": {
+        "type": "bool",
+        "description": "启用实体消歧",
+        "hint": "自动识别和合并重复的实体。需要配置 Embedding Provider。",
+        "default": false
+    },
+    "disambiguation_interval": {
+        "type": "int",
+        "description": "实体消歧间隔 (秒)",
+        "hint": "每隔多少秒执行一次实体消歧。",
+        "default": 7200
+    },
+    "vector_search_weight": {
+        "type": "float",
+        "description": "向量检索权重",
+        "hint": "混合检索中向量检索的权重（0-1之间）。",
+        "default": 0.7
+    },
+    "keyword_search_weight": {
+        "type": "float",
+        "description": "关键词检索权重",
+        "hint": "混合检索中关键词检索的权重（0-1之间）。",
+        "default": 0.3
     }
 }

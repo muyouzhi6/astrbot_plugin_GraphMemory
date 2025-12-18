@@ -135,24 +135,25 @@ class GraphStore:
     # ==================== Entity 节点操作 ====================
 
     async def add_entity(self, entity: EntityNode) -> bool:
-        """添加或更新实体节点"""
+        """添加或更新实体节点
+
+        注意: entity.embedding 应该在调用此方法前已经生成
+        """
+        # 如果没有 embedding，在这里生成（异步）
+        if not entity.embedding and self.embedding_provider and entity.description:
+            try:
+                entity.embedding = await self.embedding_provider.get_embedding(entity.description)
+            except Exception as e:
+                logger.warning(f"[GraphMemory] 生成 embedding 失败: {e}")
+                entity.embedding = [0.0] * self.embedding_dim
+
+        if not entity.embedding:
+            entity.embedding = [0.0] * self.embedding_dim
+
         def _add():
             try:
                 now = datetime.now(timezone.utc)
-
-                # 生成 embedding
                 embedding = entity.embedding
-                if not embedding and self.embedding_provider and entity.description:
-                    try:
-                        embedding = asyncio.run(
-                            self.embedding_provider.get_embedding(entity.description)
-                        )
-                    except Exception as e:
-                        logger.warning(f"[GraphMemory] 生成 embedding 失败: {e}")
-                        embedding = [0.0] * self.embedding_dim
-
-                if not embedding:
-                    embedding = [0.0] * self.embedding_dim
 
                 self.conn.execute(
                     """
@@ -416,3 +417,310 @@ class GraphStore:
                 return 0
 
         return await self._execute_in_thread(_prune)
+
+    # ==================== 搜索和管理操作 ====================
+
+    async def search_entities(
+        self,
+        query: str,
+        entity_type: str | None = None,
+        limit: int = 10,
+    ) -> list[EntityNode]:
+        """搜索实体
+
+        Args:
+            query: 搜索关键词
+            entity_type: 实体类型过滤（可选）
+            limit: 返回结果数量
+
+        Returns:
+            实体列表
+        """
+        def _search():
+            try:
+                # 构建查询条件
+                where_clauses = []
+                params = {"query": query, "limit": limit}
+
+                # 关键词匹配
+                where_clauses.append("(e.name CONTAINS $query OR e.description CONTAINS $query)")
+
+                # 类型过滤
+                if entity_type:
+                    where_clauses.append("e.type = $entity_type")
+                    params["entity_type"] = entity_type
+
+                where_clause = " AND ".join(where_clauses)
+
+                # 执行查询
+                result = self.conn.execute(
+                    f"""
+                    MATCH (e:Entity)
+                    WHERE {where_clause}
+                    RETURN e
+                    ORDER BY e.importance DESC, e.access_count DESC
+                    LIMIT $limit
+                    """,
+                    params,
+                )
+
+                entities = []
+                while result.has_next():
+                    row = result.get_next()
+                    e = row[0]
+                    entity = EntityNode(
+                        name=e["name"],
+                        type=e["type"],
+                        description=e["description"],
+                        importance=e.get("importance", 1.0),
+                        created_at=e.get("created_at"),
+                        last_accessed=e.get("last_accessed"),
+                        access_count=e.get("access_count", 0),
+                    )
+                    entities.append(entity)
+
+                return entities
+            except Exception as e:
+                logger.error(f"[GraphMemory] 搜索实体失败: {e}", exc_info=True)
+                return []
+
+        return await self._execute_in_thread(_search)
+
+    async def get_entity_relations(self, entity_name: str) -> list[dict]:
+        """获取实体的所有关系
+
+        Args:
+            entity_name: 实体名称
+
+        Returns:
+            关系列表
+        """
+        def _get_relations():
+            try:
+                relations = []
+
+                # 获取出边关系
+                result = self.conn.execute(
+                    """
+                    MATCH (e1:Entity {name: $name})-[r:RELATED_TO]->(e2:Entity)
+                    RETURN e1.name as from, e2.name as to, r.relation as relation,
+                           r.strength as strength, r.evidence as evidence
+                    """,
+                    {"name": entity_name},
+                )
+
+                while result.has_next():
+                    row = result.get_next()
+                    relations.append({
+                        "from": row[0],
+                        "to": row[1],
+                        "relation": row[2],
+                        "strength": row[3],
+                        "evidence": row[4],
+                        "direction": "outgoing",
+                    })
+
+                # 获取入边关系
+                result = self.conn.execute(
+                    """
+                    MATCH (e1:Entity)-[r:RELATED_TO]->(e2:Entity {name: $name})
+                    RETURN e1.name as from, e2.name as to, r.relation as relation,
+                           r.strength as strength, r.evidence as evidence
+                    """,
+                    {"name": entity_name},
+                )
+
+                while result.has_next():
+                    row = result.get_next()
+                    relations.append({
+                        "from": row[0],
+                        "to": row[1],
+                        "relation": row[2],
+                        "strength": row[3],
+                        "evidence": row[4],
+                        "direction": "incoming",
+                    })
+
+                return relations
+            except Exception as e:
+                logger.error(f"[GraphMemory] 获取实体关系失败: {e}", exc_info=True)
+                return []
+
+        return await self._execute_in_thread(_get_relations)
+
+    async def delete_entity(self, entity_name: str) -> tuple[bool, int]:
+        """删除实体及其所有关系
+
+        Args:
+            entity_name: 实体名称
+
+        Returns:
+            (是否成功, 删除的关系数量)
+        """
+        def _delete():
+            try:
+                # 统计关系数量
+                result = self.conn.execute(
+                    """
+                    MATCH (e:Entity {name: $name})-[r]-()
+                    RETURN COUNT(r) as count
+                    """,
+                    {"name": entity_name},
+                )
+                relation_count = result.get_next()[0] if result.has_next() else 0
+
+                # 删除实体（DETACH DELETE 会自动删除所有关系）
+                self.conn.execute(
+                    """
+                    MATCH (e:Entity {name: $name})
+                    DETACH DELETE e
+                    """,
+                    {"name": entity_name},
+                )
+
+                logger.info(f"[GraphMemory] 删除实体 '{entity_name}' 及其 {relation_count} 条关系")
+                return True, relation_count
+            except Exception as e:
+                logger.error(f"[GraphMemory] 删除实体失败: {e}", exc_info=True)
+                return False, 0
+
+        return await self._execute_in_thread(_delete)
+
+    async def export_graph(self, persona_id: str | None = None) -> dict:
+        """导出图谱数据
+
+        Args:
+            persona_id: 人格ID过滤（可选）
+
+        Returns:
+            图谱数据字典
+        """
+        def _export():
+            try:
+                data = {
+                    "version": "0.4.0",
+                    "entities": [],
+                    "relations": [],
+                    "sessions": [],
+                }
+
+                # 导出实体
+                if persona_id:
+                    # 只导出指定人格相关的实体
+                    result = self.conn.execute(
+                        """
+                        MATCH (e:Entity)-[:MENTIONED_IN]->(s:Session {persona_id: $persona_id})
+                        RETURN DISTINCT e
+                        """,
+                        {"persona_id": persona_id},
+                    )
+                else:
+                    # 导出所有实体
+                    result = self.conn.execute("MATCH (e:Entity) RETURN e")
+
+                while result.has_next():
+                    row = result.get_next()
+                    e = row[0]
+                    data["entities"].append({
+                        "name": e["name"],
+                        "type": e["type"],
+                        "description": e["description"],
+                        "importance": e.get("importance", 1.0),
+                        "access_count": e.get("access_count", 0),
+                    })
+
+                # 导出关系
+                entity_names = [e["name"] for e in data["entities"]]
+                if entity_names:
+                    result = self.conn.execute(
+                        """
+                        MATCH (e1:Entity)-[r:RELATED_TO]->(e2:Entity)
+                        WHERE e1.name IN $names AND e2.name IN $names
+                        RETURN e1.name, e2.name, r.relation, r.strength, r.evidence
+                        """,
+                        {"names": entity_names},
+                    )
+
+                    while result.has_next():
+                        row = result.get_next()
+                        data["relations"].append({
+                            "from": row[0],
+                            "to": row[1],
+                            "relation": row[2],
+                            "strength": row[3],
+                            "evidence": row[4],
+                        })
+
+                # 导出会话信息（可选）
+                if persona_id:
+                    result = self.conn.execute(
+                        """
+                        MATCH (s:Session {persona_id: $persona_id})
+                        RETURN s
+                        """,
+                        {"persona_id": persona_id},
+                    )
+                else:
+                    result = self.conn.execute("MATCH (s:Session) RETURN s")
+
+                while result.has_next():
+                    row = result.get_next()
+                    s = row[0]
+                    data["sessions"].append({
+                        "id": s["id"],
+                        "name": s["name"],
+                        "type": s["type"],
+                        "persona_id": s.get("persona_id", "default"),
+                    })
+
+                return data
+            except Exception as e:
+                logger.error(f"[GraphMemory] 导出图谱失败: {e}", exc_info=True)
+                return {}
+
+        return await self._execute_in_thread(_export)
+
+    async def import_graph(self, data: dict, merge: bool = True) -> tuple[int, int]:
+        """导入图谱数据
+
+        Args:
+            data: 图谱数据字典
+            merge: 是否合并（True）或覆盖（False）
+
+        Returns:
+            (导入的实体数, 导入的关系数)
+        """
+        entity_count = 0
+        relation_count = 0
+
+        try:
+            # 导入实体
+            for entity_data in data.get("entities", []):
+                entity = EntityNode(
+                    name=entity_data["name"],
+                    type=entity_data["type"],
+                    description=entity_data["description"],
+                    importance=entity_data.get("importance", 1.0),
+                    access_count=entity_data.get("access_count", 0),
+                )
+                if await self.add_entity(entity):
+                    entity_count += 1
+
+            # 导入关系
+            for relation_data in data.get("relations", []):
+                relation = RelatedToRel(
+                    from_entity=relation_data["from"],
+                    to_entity=relation_data["to"],
+                    relation=relation_data["relation"],
+                    strength=relation_data.get("strength", 1.0),
+                    evidence=relation_data.get("evidence", ""),
+                )
+                if await self.add_relation(relation):
+                    relation_count += 1
+
+            logger.info(f"[GraphMemory] 导入完成: {entity_count} 个实体, {relation_count} 条关系")
+            return entity_count, relation_count
+
+        except Exception as e:
+            logger.error(f"[GraphMemory] 导入图谱失败: {e}", exc_info=True)
+            return entity_count, relation_count
