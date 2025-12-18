@@ -364,6 +364,57 @@ class GraphStore:
 
         return await self._execute_in_thread(_get_stats)
 
+    async def get_entity_type_distribution(self) -> list[dict]:
+        """获取实体类型分布"""
+        def _get_distribution():
+            try:
+                result = self.conn.execute(
+                    """
+                    MATCH (e:Entity)
+                    RETURN e.type as type, COUNT(e) as count
+                    ORDER BY count DESC
+                    """
+                )
+                distribution = []
+                while result.has_next():
+                    row = result.get_next()
+                    distribution.append({
+                        "type": row[0] or "未分类",
+                        "count": row[1],
+                    })
+                return distribution
+            except Exception as e:
+                logger.error(f"[GraphMemory] 获取实体类型分布失败: {e}", exc_info=True)
+                return []
+
+        return await self._execute_in_thread(_get_distribution)
+
+    async def get_timeline_stats(self) -> list[dict]:
+        """获取时间线统计（按日期统计实体创建数量）"""
+        def _get_timeline():
+            try:
+                result = self.conn.execute(
+                    """
+                    MATCH (e:Entity)
+                    WHERE e.created_at IS NOT NULL
+                    RETURN substring(e.created_at, 0, 10) as date, COUNT(e) as count
+                    ORDER BY date ASC
+                    """
+                )
+                timeline = []
+                while result.has_next():
+                    row = result.get_next()
+                    timeline.append({
+                        "date": row[0],
+                        "count": row[1],
+                    })
+                return timeline
+            except Exception as e:
+                logger.error(f"[GraphMemory] 获取时间线统计失败: {e}", exc_info=True)
+                return []
+
+        return await self._execute_in_thread(_get_timeline)
+
     # ==================== 维护操作 ====================
 
     async def apply_time_decay(self, decay_rate: float = 0.95):

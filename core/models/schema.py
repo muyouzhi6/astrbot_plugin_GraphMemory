@@ -16,17 +16,17 @@ def get_embedding_dim_from_provider(embedding_provider) -> int:
         向量维度，默认 1536 (OpenAI text-embedding-ada-002)
     """
     if not embedding_provider:
-        return 1536
+        return 1024
 
     # 尝试从 provider 获取维度信息
     if hasattr(embedding_provider, "embedding_dim"):
         return embedding_provider.embedding_dim
 
     # 默认维度
-    return 1536
+    return 1024
 
 
-def initialize_schema(db: kuzu.Database, conn: kuzu.Connection, embedding_dim: int = 1536):
+def initialize_schema(db: kuzu.Database, conn: kuzu.Connection, embedding_dim: int = 1024):
     """初始化 KuzuDB Schema
 
     Args:

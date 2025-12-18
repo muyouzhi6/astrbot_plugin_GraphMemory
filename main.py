@@ -6,21 +6,23 @@ import platform
 from astrbot.api import logger
 
 if platform.system() == "Windows":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy()) # type: ignore
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore
 
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
 
+from .core.event_handler import EventHandler
 from .core.handlers import CommandHandler
 from .core.manager import GraphMemoryManager
+from .core.webui_manager import WebUIManager
 
 
 @register(
     "GraphMemory",
     "lxfight",
-    "基于图数据库的长期记忆插件 (v0.4.0)",
-    version="0.4.0",
+    "基于图数据库的长期记忆插件 (v0.5.0)",
+    version="0.5.0",
 )
 class GraphMemory(Star):
     """GraphMemory 插件
@@ -30,29 +32,38 @@ class GraphMemory(Star):
     - 智能记忆检索
     - 人格分层共享
     - 时间衰减机制
+    - WebUI 可视化管理
     """
 
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
         self.config = config or {}
 
-        # 获取插件数据目录（必须在 main.py 中调用）
+        # 获取插件数据目录
         plugin_data_path = StarTools.get_data_dir()
 
         # 初始化核心管理器
         self.manager = GraphMemoryManager(context, plugin_data_path, self.config)
 
+        # 初始化事件处理器
+        self.event_handler = EventHandler(self.manager, self.config)
+
         # 初始化指令处理器
         self.cmd_handler = CommandHandler(self.manager, plugin_data_path)
+
+        # 初始化 WebUI 管理器
+        self.webui_manager = WebUIManager(self.manager, self.config)
 
         logger.info("[GraphMemory] 插件构造完成")
 
     async def initialize(self):
-        """插件初始化（在 Provider 加载后调用）"""
+        """插件初始化"""
         logger.info("[GraphMemory] initialize() 被调用，核心模块将延迟初始化")
+        await self.webui_manager.start()
 
     async def terminate(self):
         """插件终止"""
+        await self.webui_manager.stop()
         await self.manager.terminate()
 
     # ==================== 事件处理 ====================
@@ -60,51 +71,17 @@ class GraphMemory(Star):
     @filter.on_llm_request()
     async def inject_memory(self, event: AstrMessageEvent, req: ProviderRequest):
         """在 LLM 请求前注入记忆"""
-        await self.manager.inject_memory(event, req)
-
-        # 如果启用了 Function Calling，注册工具
-        if self.config.get("enable_function_calling", False):
-            await self.manager.ensure_initialized()
-            if self.manager.function_calling:
-                tool_schema = self.manager.function_calling.get_tool_schema()
-                if not hasattr(req, "tools"):
-                    req.tools = []
-                req.tools.append(tool_schema)
-                logger.debug("[GraphMemory] 已注册 Function Calling 工具")
+        await self.event_handler.on_llm_request(event, req)
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_user_message(self, event: AstrMessageEvent):
         """监听用户消息"""
-        await self.manager.on_user_message(event)
+        await self.event_handler.on_user_message(event)
 
     @filter.on_llm_response()
     async def on_llm_resp(self, event: AstrMessageEvent, resp: LLMResponse):
         """监听 LLM 响应"""
-        # 处理 Function Calling
-        if self.config.get("enable_function_calling", False) and hasattr(resp, "tool_calls"):
-            if resp.tool_calls:
-                await self.manager.ensure_initialized()
-                session_id = event.unified_msg_origin
-                persona_id = await self.manager._get_persona_id(event)
-
-                for tool_call in resp.tool_calls:
-                    tool_name = tool_call.get("name", "")
-                    tool_args = tool_call.get("arguments", {})
-
-                    if tool_name == "search_memory":
-                        result = await self.manager.function_calling.handle_tool_call(
-                            tool_name, tool_args, session_id, persona_id
-                        )
-                        # 将结果添加到响应中
-                        if not hasattr(resp, "tool_results"):
-                            resp.tool_results = []
-                        resp.tool_results.append({
-                            "tool_call_id": tool_call.get("id", ""),
-                            "result": result,
-                        })
-
-        if resp.completion_text:
-            await self.manager.on_bot_message(event, resp.completion_text)
+        await self.event_handler.on_llm_response(event, resp)
 
     # ==================== 指令处理 ====================
 
@@ -136,4 +113,10 @@ class GraphMemory(Star):
     async def cmd_import(self, event: AstrMessageEvent):
         """导入记忆"""
         result = await self.cmd_handler.handle_import(event)
+        yield result
+
+    @filter.command("memory_disambiguate")
+    async def cmd_disambiguate(self, event: AstrMessageEvent):
+        """实体消歧"""
+        result = await self.cmd_handler.handle_disambiguate(event)
         yield result

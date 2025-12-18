@@ -3,11 +3,13 @@
 import json
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
-from .manager import GraphMemoryManager
+if TYPE_CHECKING:
+    from ..manager import GraphMemoryManager
 
 
 class CommandHandler:
@@ -16,7 +18,7 @@ class CommandHandler:
     负责处理所有用户指令的具体逻辑
     """
 
-    def __init__(self, manager: GraphMemoryManager, data_dir: Path):
+    def __init__(self, manager: "GraphMemoryManager", data_dir: Path):
         self.manager = manager
         self.data_dir = data_dir
 
@@ -80,7 +82,7 @@ class CommandHandler:
                     lines.append(f"   关系: {len(relations)} 条")
                     for rel in relations[:3]:  # 只显示前3条
                         direction = "→" if rel["direction"] == "outgoing" else "←"
-                        target = rel['to'] if rel['direction'] == 'outgoing' else rel['from']
+                        target = rel["to"] if rel["direction"] == "outgoing" else rel["from"]
                         lines.append(f"     {direction} {target}: {rel['relation']}")
                     if len(relations) > 3:
                         lines.append(f"     ... 还有 {len(relations) - 3} 条关系")
@@ -196,7 +198,7 @@ class CommandHandler:
             if not filepath.exists():
                 return f"文件不存在: {filepath}"
 
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 data = json.load(f)
 
             # 导入图谱
@@ -211,3 +213,43 @@ class CommandHandler:
         except Exception as e:
             logger.error(f"[GraphMemory] 导入失败: {e}", exc_info=True)
             return f"导入失败: {e}"
+
+    async def handle_disambiguate(self, event: AstrMessageEvent) -> str:
+        """处理 /memory_disambiguate 指令
+
+        用法:
+        /memory_disambiguate [threshold:<相似度>] [auto_merge:true|false]
+        """
+        try:
+            # 解析参数
+            args = event.message_str.strip().split()
+            threshold = 0.85
+            auto_merge = False
+
+            for arg in args:
+                if arg.startswith("threshold:"):
+                    try:
+                        threshold = float(arg.split(":", 1)[1])
+                        if not 0 < threshold <= 1:
+                            return "相似度阈值必须在 0 到 1 之间"
+                    except ValueError:
+                        return f"无效的 threshold 参数: {arg}"
+                elif arg.startswith("auto_merge:"):
+                    auto_merge = arg.split(":", 1)[1].lower() == "true"
+
+            # 执行消歧
+            result = await self.manager.run_disambiguation(threshold, auto_merge)
+
+            if result["found"] == 0:
+                return "未找到相似实体"
+
+            return f"""实体消歧完成:
+- 找到相似实体对: {result['found']}
+- 合并实体对: {result['merged']}
+- 相似度阈值: {threshold:.2f}
+- 自动合并: {'是' if auto_merge else '否'}
+"""
+
+        except Exception as e:
+            logger.error(f"[GraphMemory] 实体消歧失败: {e}", exc_info=True)
+            return f"实体消歧失败: {e}"

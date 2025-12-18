@@ -2,14 +2,12 @@
 
 import asyncio
 from pathlib import Path
-from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context
 
-from .handlers import CommandHandler
 from .models import SessionNode
 from .retrieval import KnowledgeExtractor, MemoryRetriever
 from .services import EntityDisambiguation, FunctionCallingHandler
@@ -250,6 +248,25 @@ class GraphMemoryManager:
         """导入图谱"""
         await self.ensure_initialized()
         return await self.graph_store.import_graph(data, merge)
+
+    async def run_disambiguation(
+        self,
+        similarity_threshold: float = 0.85,
+        auto_merge: bool = False,
+    ) -> dict:
+        """运行实体消歧
+
+        Args:
+            similarity_threshold: 相似度阈值
+            auto_merge: 是否自动合并（不使用 LLM 判断）
+
+        Returns:
+            消歧结果统计 {"found": int, "merged": int}
+        """
+        await self.ensure_initialized()
+        if not self.disambiguation:
+            return {"found": 0, "merged": 0}
+        return await self.disambiguation.run_disambiguation(similarity_threshold, auto_merge)
 
     # ==================== 内部方法 ====================
 
