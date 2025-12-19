@@ -100,9 +100,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import cytoscape from 'cytoscape'
+import fcose from 'cytoscape-fcose'
 import type { Core, NodeSingular } from 'cytoscape'
 import { getIconSvg, getIconComponent } from '@/utils/icons'
 import { X, Maximize, Share2, Circle, Grid, Target } from 'lucide-vue-next'
+
+// 注册 fcose 布局扩展
+cytoscape.use(fcose)
 
 interface GraphNode {
   id: string
@@ -189,64 +193,91 @@ const initCytoscape = () => {
         selector: 'node',
         style: {
           'background-color': 'data(color)',
-          'background-opacity': 0.1,
-          'border-width': 2,
+          'background-opacity': 0.15,
+          'border-width': 3,
           'border-color': 'data(color)',
+          'border-opacity': 0.8,
           'label': 'data(label)',
           'width': 'data(size)',
           'height': 'data(size)',
-          'font-size': '12px',
+          'font-size': '11px',
           'font-weight': '600',
           'text-valign': 'bottom',
           'text-margin-y': 8,
-          'color': isDark ? '#e2e8f0' : '#475569',
-          'text-background-color': bgColor,
-          'text-background-opacity': 0.8,
-          'text-background-padding': '2px',
-          'text-background-shape': 'roundrectangle',
+          'color': isDark ? '#e2e8f0' : '#1f2937',
+          'text-outline-color': isDark ? '#0f172a' : '#ffffff',
+          'text-outline-width': 2,
           'background-image': 'data(icon)',
           'background-fit': 'contain',
           'background-image-opacity': 1,
-          'transition-property': 'background-opacity, border-width, width, height, font-size',
-          'transition-duration': 300,
-        } as any, // type cast to avoid strict typing issues with specific cytoscape properties
+          // 添加阴影效果
+          'shadow-blur': 10,
+          'shadow-color': 'data(color)',
+          'shadow-opacity': 0.3,
+          'shadow-offset-x': 0,
+          'shadow-offset-y': 2,
+          // 平滑过渡
+          'transition-property': 'background-opacity, border-width, width, height, font-size, shadow-blur, shadow-opacity',
+          'transition-duration': 400,
+          'transition-timing-function': 'ease-out',
+        } as any,
       },
       {
         selector: 'node:hover',
         style: {
-          'background-opacity': 0.2,
-          'border-width': 3,
-          'font-size': '14px',
+          'background-opacity': 0.25,
+          'border-width': 4,
+          'font-size': '12px',
           'text-background-opacity': 1,
           'z-index': 999,
+          'shadow-blur': 20,
+          'shadow-opacity': 0.5,
+          'width': (ele: NodeSingular) => (ele.data('size') || 40) * 1.1,
+          'height': (ele: NodeSingular) => (ele.data('size') || 40) * 1.1,
         } as any,
       },
       {
         selector: 'edge',
         style: {
           'width': 'data(width)',
-          'line-color': isDark ? '#334155' : '#cbd5e1',
-          'target-arrow-color': isDark ? '#334155' : '#cbd5e1',
+          'line-color': isDark ? '#475569' : '#cbd5e1',
+          'target-arrow-color': isDark ? '#475569' : '#cbd5e1',
           'target-arrow-shape': 'triangle',
           'curve-style': 'bezier',
-          'arrow-scale': 0.8,
-          'opacity': 0.6,
+          'arrow-scale': 1,
+          'opacity': 0.5,
           'label': 'data(label)',
-          'font-size': '10px',
-          'color': isDark ? '#94a3b8' : '#94a3b8',
+          'font-size': '11px',
+          'color': isDark ? '#94a3b8' : '#475569',
           'text-rotation': 'autorotate',
-          'text-background-color': bgColor,
-          'text-background-opacity': 0.8,
-          'text-background-padding': '2px',
+          'text-outline-color': isDark ? '#0f172a' : '#ffffff',
+          'text-outline-width': 2,
+          // 边的过渡效果
+          'transition-property': 'line-color, target-arrow-color, width, opacity',
+          'transition-duration': 300,
+          'transition-timing-function': 'ease-in-out',
+        } as any,
+      },
+      {
+        selector: 'edge:hover',
+        style: {
+          'width': (ele: any) => (ele.data('width') || 2) * 1.5,
+          'opacity': 0.8,
+          'line-color': isDark ? '#64748b' : '#94a3b8',
+          'target-arrow-color': isDark ? '#64748b' : '#94a3b8',
+          'z-index': 100,
         } as any,
       },
       {
         selector: 'node:selected',
         style: {
-          'border-width': 4,
-          'background-opacity': 0.3,
-          'width': (ele: NodeSingular) => (ele.data('size') || 40) * 1.2,
-          'height': (ele: NodeSingular) => (ele.data('size') || 40) * 1.2,
+          'border-width': 5,
+          'background-opacity': 0.35,
+          'width': (ele: NodeSingular) => (ele.data('size') || 40) * 1.25,
+          'height': (ele: NodeSingular) => (ele.data('size') || 40) * 1.25,
+          'shadow-blur': 25,
+          'shadow-opacity': 0.6,
+          'z-index': 1000,
         } as any,
       },
       {
@@ -254,33 +285,38 @@ const initCytoscape = () => {
         style: {
           'line-color': '#3b82f6',
           'target-arrow-color': '#3b82f6',
-          'width': 3,
+          'width': 4,
           'opacity': 1,
           'z-index': 99,
         } as any,
       },
-      // 关联高亮样式
+      // 关联高亮样式 - 增强效果
       {
         selector: '.highlighted',
         style: {
-          'background-opacity': 0.3,
+          'background-opacity': 0.35,
+          'border-width': 4,
           'line-color': '#3b82f6',
           'target-arrow-color': '#3b82f6',
-          'transition-duration': 300,
+          'opacity': 1,
+          'shadow-blur': 15,
+          'shadow-opacity': 0.5,
+          'transition-duration': 400,
         } as any,
       },
       {
         selector: '.faded',
         style: {
-          'opacity': 0.1,
+          'opacity': 0.08,
           'label': '',
+          'transition-duration': 400,
         } as any,
       }
     ],
-    layout: { name: 'preset' } // 初始空布局
+    layout: { name: 'preset' }
   })
 
-  // 节点点击
+  // 节点点击 - 增强动画效果
   cy.on('tap', 'node', (event) => {
     const node = event.target
     selectedNode.value = {
@@ -289,21 +325,73 @@ const initCytoscape = () => {
       properties: node.data('properties') || {},
     }
 
-    // 高亮邻居
+    // 高亮邻居 - 添加波纹动画效果
     cy?.elements().removeClass('highlighted faded')
     const neighborhood = node.neighborhood().add(node)
+
+    // 先淡化所有元素
     cy?.elements().not(neighborhood).addClass('faded')
-    neighborhood.addClass('highlighted')
+
+    // 延迟高亮邻居，创建波纹效果
+    setTimeout(() => {
+      neighborhood.addClass('highlighted')
+    }, 50)
+
+    // 节点脉冲动画
+    node.animate({
+      style: {
+        'border-width': 6,
+        'shadow-blur': 30,
+      },
+      duration: 300,
+      easing: 'ease-out'
+    }).animate({
+      style: {
+        'border-width': 5,
+        'shadow-blur': 25,
+      },
+      duration: 200,
+      easing: 'ease-in'
+    })
   })
 
-  // 画布点击（取消选择）
+  // 画布点击（取消选择）- 添加淡入动画
   cy.on('tap', (event) => {
     if (event.target === cy) {
       selectedNode.value = null
-      cy?.elements().removeClass('highlighted faded')
+
+      // 先移除高亮
+      cy?.elements().removeClass('highlighted')
+
+      // 延迟恢复，创建淡入效果
+      setTimeout(() => {
+        cy?.elements().removeClass('faded')
+      }, 100)
     }
   })
+
+  // 鼠标悬停边时高亮连接的节点
+  cy.on('mouseover', 'edge', (event) => {
+    const edge = event.target
+    const source = edge.source()
+    const target = edge.target()
+
+    source.addClass('highlighted')
+    target.addClass('highlighted')
+  })
+
+  cy.on('mouseout', 'edge', (event) => {
+    const edge = event.target
+    const source = edge.source()
+    const target = edge.target()
+
+    // 只有在节点未被选中时才移除高亮
+    if (!source.selected()) source.removeClass('highlighted')
+    if (!target.selected()) target.removeClass('highlighted')
+  })
+
 }
+
 
 // 更新图谱数据
 const updateGraph = async () => {
@@ -387,47 +475,76 @@ const runLayout = () => {
   const layoutConfig: any = {
     name: currentLayout.value,
     animate: true,
-    animationDuration: 1000,
+    animationDuration: 600,
     animationEasing: 'ease-out',
     padding: 50,
+    fit: true,
   }
 
   // 特定布局参数优化
   if (currentLayout.value === 'cose') {
+    // 使用 fcose 布局替代 cose，提供更好的力导向效果
     Object.assign(layoutConfig, {
-      // 开启随机化以确保每次都有"展开"动画
+      name: 'fcose',
+      quality: 'default',
       randomize: true,
-
-      // 动画配置
       animate: true,
-      animationDuration: 2000,
-      animationEasing: 'ease-in-out',
+      animationDuration: 800,
+      animationEasing: 'ease-out',
 
-      // 布局物理参数 - 减少迭代次数让动画可见
-      componentSpacing: 80,
-      nodeRepulsion: (node: any) => 20000,
-      idealEdgeLength: (edge: any) => 100,
-      edgeElasticity: (edge: any) => 100,
-      nestingFactor: 1.2,
-      gravity: 0.1,
-      numIter: 50,
-      initialTemp: 100,
-      coolingFactor: 0.99,
-      minTemp: 1.0,
+      // 力导向参数
+      nodeSeparation: 100,
+      idealEdgeLength: 100,
+      edgeElasticity: 0.45,
+      nestingFactor: 0.1,
+      gravity: 0.25,
+      numIter: 2500,
 
-      // 启用刷新以展示过程动画
-      refresh: 10,
-      fit: true,
+      // 初始温度和冷却
+      initialEnergyOnIncremental: 0.3,
+      gravityRangeCompound: 1.5,
+      gravityCompound: 1.0,
+      gravityRange: 3.8,
 
       // 避免重叠
-      nodeOverlap: 20,
+      nodeRepulsion: 4500,
+      idealEdgeLength: 50,
+      edgeElasticity: 0.45,
+
+      fit: true,
+      padding: 50,
+    })
+  } else if (currentLayout.value === 'circle') {
+    Object.assign(layoutConfig, {
+      animationDuration: 500,
       avoidOverlap: true,
+      radius: undefined,
+      startAngle: 0,
+      sweep: undefined,
+      clockwise: true,
+      spacingFactor: 1.2,
+    })
+  } else if (currentLayout.value === 'grid') {
+    Object.assign(layoutConfig, {
+      animationDuration: 500,
+      avoidOverlap: true,
+      avoidOverlapPadding: 10,
+      condense: false,
+      rows: undefined,
+      cols: undefined,
     })
   } else if (currentLayout.value === 'concentric') {
     Object.assign(layoutConfig, {
-      minNodeSpacing: 30,
+      animationDuration: 500,
+      minNodeSpacing: 40,
       avoidOverlap: true,
       levelWidth: (nodes: any) => 2,
+      concentric: (node: any) => node.degree(),
+      startAngle: 0,
+      sweep: undefined,
+      clockwise: true,
+      equidistant: false,
+      spacingFactor: 1.2,
     })
   }
 
@@ -680,7 +797,7 @@ onUnmounted(() => {
   color: var(--color-text-tertiary);
 }
 
-/* 控制面板 */
+/* 控制面板 - 现代化设计 */
 .controls {
   position: absolute;
   bottom: 24px;
@@ -688,14 +805,17 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px;
+  padding: 8px;
   border-radius: var(--radius-full);
   z-index: 20;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  animation: fadeInUp 0.5s ease-out;
 }
 
 .btn-control {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border: none;
   background: transparent;
   color: var(--color-text-secondary);
@@ -704,65 +824,143 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: relative;
+}
+
+.btn-control::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--color-bg-hover);
+  opacity: 0;
+  transform: scale(0.8);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.btn-control:hover::before {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .btn-control:hover {
-  background: var(--color-bg-hover);
   color: var(--color-text-primary);
+  transform: translateY(-2px);
+}
+
+.btn-control:active {
+  transform: translateY(0);
 }
 
 .btn-control.active {
-  background: var(--color-bg-active);
   color: var(--color-info);
+}
+
+.btn-control.active::before {
+  opacity: 1;
+  background: var(--color-bg-active);
 }
 
 .divider {
   width: 1px;
-  height: 20px;
+  height: 24px;
   background: var(--color-border);
-  margin: 0 4px;
+  margin: 0 6px;
+  opacity: 0.5;
 }
 
-/* 图例 */
+/* 图例 - 现代化设计 */
 .legend {
   position: absolute;
   bottom: 24px;
   right: 24px;
-  padding: 12px 16px;
+  padding: 14px 18px;
   border-radius: var(--radius-lg);
   display: flex;
-  gap: 16px;
+  gap: 18px;
   z-index: 20;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  animation: fadeInUp 0.5s ease-out 0.1s backwards;
 }
 
 .legend-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  transition: all 0.2s ease;
+  cursor: default;
+}
+
+.legend-item:hover {
+  transform: translateY(-1px);
 }
 
 .dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
+  box-shadow: 0 0 8px currentColor;
+  transition: all 0.3s ease;
+}
+
+.legend-item:hover .dot {
+  transform: scale(1.2);
+  box-shadow: 0 0 12px currentColor;
 }
 
 .name {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--color-text-secondary);
   font-weight: 500;
+  transition: color 0.2s ease;
 }
 
-/* 过渡动画 */
-.slide-fade-enter-active,
+.legend-item:hover .name {
+  color: var(--color-text-primary);
+}
+
+/* 淡入上升动画 */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 过渡动画 - 增强效果 */
+.slide-fade-enter-active {
+  animation: slideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .slide-fade-leave-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: slideOut 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.slide-fade-enter-from,
-.slide-fade-leave-to {
-  transform: translateX(20px);
-  opacity: 0;
+@keyframes slideIn {
+  from {
+    transform: translateX(30px) scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes slideOut {
+  from {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(20px) scale(0.98);
+    opacity: 0;
+  }
 }
 </style>
