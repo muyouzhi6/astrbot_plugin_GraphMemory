@@ -102,7 +102,7 @@ import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import cytoscape from 'cytoscape'
 import fcose from 'cytoscape-fcose'
 import type { Core, NodeSingular } from 'cytoscape'
-import { getIconSvg, getIconComponent } from '@/utils/icons'
+import { getIconComponent } from '@/utils/icons'
 import { X, Maximize, Share2, Circle, Grid, Target } from 'lucide-vue-next'
 
 // 注册 fcose 布局扩展
@@ -137,21 +137,21 @@ let cy: Core | null = null
 const selectedNode = ref<GraphNode | null>(null)
 const currentLayout = ref('cose')
 
-// 实体类型颜色映射（浅色系，柔和清新）
+// 实体类型颜色映射（明亮莫兰迪配色）
 const typeColors: Record<string, string> = {
   // 英文
-  PERSON: '#3b82f6',    // 蓝色
-  PLACE: '#10b981',     // 绿色
-  THING: '#f59e0b',     // 橙色
-  CONCEPT: '#8b5cf6',   // 紫色
-  EVENT: '#ef4444',     // 红色
+  PERSON: '#7EC8E3',    // 天蓝
+  PLACE: '#9BD49C',     // 草绿
+  THING: '#F4C87F',     // 杏黄
+  CONCEPT: '#D4A5D4',   // 浅紫
+  EVENT: '#F5A9A3',     // 珊瑚粉
   // 中文
-  '人物': '#3b82f6',
-  '地点': '#10b981',
-  '事物': '#f59e0b',
-  '概念': '#8b5cf6',
-  '事件': '#ef4444',
-  default: '#64748b',   // 灰蓝
+  '人物': '#7EC8E3',
+  '地点': '#9BD49C',
+  '事物': '#F4C87F',
+  '概念': '#D4A5D4',
+  '事件': '#F5A9A3',
+  default: '#B0BEC5',   // 蓝灰
 }
 
 const visibleTypeColors = computed(() => {
@@ -193,10 +193,10 @@ const initCytoscape = () => {
         selector: 'node',
         style: {
           'background-color': 'data(color)',
-          'background-opacity': 0.15,
+          'background-opacity': 0.6,
           'border-width': 3,
           'border-color': 'data(color)',
-          'border-opacity': 0.8,
+          'border-opacity': 0.9,
           'label': 'data(label)',
           'width': 'data(size)',
           'height': 'data(size)',
@@ -205,11 +205,6 @@ const initCytoscape = () => {
           'text-valign': 'bottom',
           'text-margin-y': 8,
           'color': isDark ? '#e2e8f0' : '#1f2937',
-          'text-outline-color': isDark ? '#0f172a' : '#ffffff',
-          'text-outline-width': 2,
-          'background-image': 'data(icon)',
-          'background-fit': 'contain',
-          'background-image-opacity': 1,
           // 添加阴影效果
           'shadow-blur': 10,
           'shadow-color': 'data(color)',
@@ -225,10 +220,9 @@ const initCytoscape = () => {
       {
         selector: 'node:hover',
         style: {
-          'background-opacity': 0.25,
+          'background-opacity': 0.75,
           'border-width': 4,
           'font-size': '12px',
-          'text-background-opacity': 1,
           'z-index': 999,
           'shadow-blur': 20,
           'shadow-opacity': 0.5,
@@ -250,8 +244,6 @@ const initCytoscape = () => {
           'font-size': '11px',
           'color': isDark ? '#94a3b8' : '#475569',
           'text-rotation': 'autorotate',
-          'text-outline-color': isDark ? '#0f172a' : '#ffffff',
-          'text-outline-width': 2,
           // 边的过渡效果
           'transition-property': 'line-color, target-arrow-color, width, opacity',
           'transition-duration': 300,
@@ -272,7 +264,7 @@ const initCytoscape = () => {
         selector: 'node:selected',
         style: {
           'border-width': 5,
-          'background-opacity': 0.35,
+          'background-opacity': 0.85,
           'width': (ele: NodeSingular) => (ele.data('size') || 40) * 1.25,
           'height': (ele: NodeSingular) => (ele.data('size') || 40) * 1.25,
           'shadow-blur': 25,
@@ -294,7 +286,7 @@ const initCytoscape = () => {
       {
         selector: '.highlighted',
         style: {
-          'background-opacity': 0.35,
+          'background-opacity': 0.8,
           'border-width': 4,
           'line-color': '#3b82f6',
           'target-arrow-color': '#3b82f6',
@@ -399,19 +391,11 @@ const updateGraph = async () => {
 
   try {
     // 转换节点
-    const cyNodes = await Promise.all(props.nodes.map(async (node) => {
+    const cyNodes = props.nodes.map((node) => {
       const importance = node.properties.importance || 0.5
       // 减小节点基础尺寸，从 30-60px 调整为 20-40px
       const size = 20 + importance * 20
       const color = getNodeColor(node.properties.type)
-      
-      let icon = ''
-      try {
-        // 异步生成 SVG 图标
-        icon = await getIconSvg(node.properties.type, color)
-      } catch (e) {
-        console.warn('Failed to generate icon for node:', node.properties.name, e)
-      }
 
       return {
         data: {
@@ -419,11 +403,10 @@ const updateGraph = async () => {
           label: node.properties.name,
           color,
           size,
-          icon,
           properties: node.properties,
         },
       }
-    }))
+    })
 
     // 转换边
     const cyEdges = props.edges.map((edge) => {
@@ -508,8 +491,6 @@ const runLayout = () => {
 
       // 避免重叠
       nodeRepulsion: 4500,
-      idealEdgeLength: 50,
-      edgeElasticity: 0.45,
 
       fit: true,
       padding: 50,
