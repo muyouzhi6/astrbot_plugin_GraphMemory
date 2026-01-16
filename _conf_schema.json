@@ -1,0 +1,112 @@
+{
+    "embedding_provider_id": {
+        "type": "string",
+        "description": "Embedding 模型 ID",
+        "hint": "必填，用于向量检索。这是实现 GraphRAG 检索的核心组件。",
+        "default": "",
+        "obvious_hint": true
+    },
+    "llm_provider_id": {
+        "type": "string",
+        "description": "知识提取模型 ID",
+        "hint": "用于知识提取和查询重写的 LLM Provider ID。如果留空，则使用当前会话的默认模型。",
+        "default": "",
+        "_special": "select_provider"
+    },
+    "enable_group_learning": {
+        "type": "bool",
+        "description": "启用群聊学习",
+        "hint": "若启用，机器人将从群聊中学习。否则，仅在私聊中学习。",
+        "default": true
+    },
+    "buffer_size_private": {
+        "type": "int",
+        "description": "私聊缓冲区大小",
+        "hint": "私聊会话缓冲区中存储的最大消息条数，达到后触发知识提取。",
+        "default": 10
+    },
+    "buffer_size_group": {
+        "type": "int",
+        "description": "群聊缓冲区大小",
+        "hint": "群聊会话缓冲区中存储的最大消息条数，达到后触发知识提取。",
+        "default": 20
+    },
+    "buffer_timeout": {
+        "type": "int",
+        "description": "缓冲区超时时间 (秒)",
+        "hint": "消息在缓冲区中最长等待时间，超过后自动触发知识提取。",
+        "default": 1800
+    },
+    "enable_query_rewriting": {
+        "type": "bool",
+        "description": "启用查询重写",
+        "hint": "在进行记忆检索前，是否使用 LLM 将用户问题重写为一个独立的、包含上下文的问题，以提升检索准确性。",
+        "default": false
+    },
+    "retrieval_top_k": {
+        "type": "int",
+        "description": "检索结果数量",
+        "hint": "记忆检索时返回的最相关结果数量。数值越大，提供的上下文越丰富，但也可能引入噪音。",
+        "default": 7
+    },
+    "enable_function_calling": {
+        "type": "bool",
+        "description": "启用主动记忆检索",
+        "hint": "将记忆检索注册为 Function Calling 工具，允许 LLM 主动决定何时检索记忆。需要 LLM 支持 Function Calling。",
+        "default": false
+    },
+    "webui_port": {
+        "type": "int",
+        "description": "WebUI 访问端口",
+        "hint": "WebUI 的监听端口。",
+        "default": 8081
+    },
+    "webui_key": {
+        "type": "string",
+        "description": "WebUI 访问密钥",
+        "hint": "用于访问 WebUI 的密钥。如果留空，将在启动时生成一个随机密钥并显示在日志中。",
+        "default": ""
+    },
+    "prune_interval": {
+        "type": "int",
+        "description": "图谱维护间隔 (秒)",
+        "hint": "每隔多少秒执行一次图谱维护（时间衰减、清理低重要性实体）。",
+        "default": 3600
+    },
+    "time_decay_rate": {
+        "type": "float",
+        "description": "时间衰减率",
+        "hint": "每次维护时，实体重要性和关系强度的衰减率（0-1之间）。值越小，衰减越快。",
+        "default": 0.95
+    },
+    "min_importance_threshold": {
+        "type": "float",
+        "description": "最小重要性阈值",
+        "hint": "实体重要性低于此阈值时，将在维护时被清理。",
+        "default": 0.1
+    },
+    "enable_entity_disambiguation": {
+        "type": "bool",
+        "description": "启用实体消歧",
+        "hint": "自动识别和合并重复的实体。需要配置 Embedding Provider。",
+        "default": false
+    },
+    "disambiguation_interval": {
+        "type": "int",
+        "description": "实体消歧间隔 (秒)",
+        "hint": "每隔多少秒执行一次实体消歧。",
+        "default": 7200
+    },
+    "vector_search_weight": {
+        "type": "float",
+        "description": "向量检索权重",
+        "hint": "混合检索中向量检索的权重（0-1之间）。",
+        "default": 0.7
+    },
+    "keyword_search_weight": {
+        "type": "float",
+        "description": "关键词检索权重",
+        "hint": "混合检索中关键词检索的权重（0-1之间）。",
+        "default": 0.3
+    }
+}
